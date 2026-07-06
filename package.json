@@ -1,0 +1,10 @@
+{
+  "name": "vecret",
+  "version": "1.0.0",
+  "description": "Zero State Vercel Serverless Proxy for Stremio",
+  "main": "api/stream.js",
+  "type": "module",
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  }
+}
