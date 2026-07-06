@@ -1,7 +1,9 @@
 {
   "rewrites": [
+    { "source": "/:user/manifest.json", "destination": "/api/manifest" },
+    { "source": "/:user/catalog/:type/:id", "destination": "/api/catalog" },
+    { "source": "/:user/catalog/:type/:id/:extra*", "destination": "/api/catalog" },
     { "source": "/:user/stream/:type/:id", "destination": "/api/stream" },
-    { "source": "/:user/subtitles/:type/:id", "destination": "/api/subtitles" },
-    { "source": "/:user/manifest.json", "destination": "/api/manifest" }
+    { "source": "/:user/subtitles/:type/:id", "destination": "/api/subtitles" }
   ]
 }
