@@ -94,45 +94,58 @@ export default async function handler(req, res) {
         const profileConfig = configs[userKey]?.profile || 'friends_light';
         const profile = PROFILES[profileConfig] || PROFILES.friends_light;
         
-        const addons = (process.env.ADDON_URLS || '').split(',').map(u => u.trim()).filter(Boolean);
+        // 1. שינוי המפריד ל-||| כדי למנוע קריסה מפסיקים פנימיים בלינקים
+        const addons = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
         if (addons.length === 0) return res.status(200).json({ streams: [] });
 
-        const requests = addons.map(baseUrl => {
+        // פונקציית שליפה מבודדת ומקבילית לכל אדאון בנפרד
+        const fetchFromAddon = async (baseUrl) => {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), profile.timeoutMs);
+            // הגבלת זמן קשיחה של 4 שניות לאדאון כדי שלא יעבור את ה-10 שניות של ורסל
+            const timeoutId = setTimeout(() => controller.abort(), 4000); 
+
+            const targetUrl = `${baseUrl.replace(/\/$/, '')}/stream/${type}/${idWithExt}`;
             
-            // יצירת כותרות דמויות דפדפן אמיתי כדי לעקוף חסימות שרתים
             const headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'application/json, text/plain, */*',
-                'Accept-Language': 'en-US,en;q=0.9,he;q=0.8'
+                'Accept': 'application/json, text/plain, */*'
             };
 
-            return fetch(`${baseUrl.replace(/\/$/, '')}/stream/${type}/${idWithExt}`, { 
-                signal: controller.signal,
-                headers: headers
-            })
-                .then(async r => {
-                    if (!r.ok) {
-                        // לוג קריטי: אם התוסף מחזיר 403 או 429, נדע מזה מיד בלוגים
-                        console.error(`[Vecret HTTP Error] ${baseUrl.substring(0, 40)}... returned status ${r.status}`);
-                        throw new Error(`HTTP ${r.status}`);
-                    }
-                    return r.json();
-                })
-                .then(data => {
-                    clearTimeout(timeoutId);
-                    if (data && Array.isArray(data.streams)) {
-                        data.streams.forEach(s => s._sourceBaseUrl = baseUrl);
-                    }
-                    return data;
-                })
-                .catch((err) => {
-                    clearTimeout(timeoutId);
-                    console.error(`[Vecret Fetch Failed] Connection to ${baseUrl.substring(0, 40)}... failed: ${err.message}`);
-                    return { streams: [] };
-                });
-        });
+            try {
+                const response = await fetch(targetUrl, { signal: controller.signal, headers });
+                if (!response.ok) {
+                    console.error(`[Vecret Addon Error] ${baseUrl.substring(0, 40)}... Status: ${response.status}`);
+                    return [];
+                }
+                const data = await response.json();
+                if (data && Array.isArray(data.streams)) {
+                    // הזרקת כתובת מקור לצורך זיהוי VIP בקוד בהמשך
+                    data.streams.forEach(s => s._sourceBaseUrl = baseUrl);
+                    return data.streams;
+                }
+                return [];
+            } catch (err) {
+                if (err.name === 'AbortError') {
+                    console.warn(`[Vecret Timeout skip] Addon ${baseUrl.substring(0, 40)}... took too long.`);
+                } else {
+                    console.error(`[Vecret Fetch Failed] Addon ${baseUrl.substring(0, 40)}... Error: ${err.message}`);
+                }
+                return [];
+            } finally {
+                clearTimeout(timeoutId);
+            }
+        };
+
+        // 2. הרצת כל השילופת במקביל (Parallel Execution)
+        const requests = addons.map(baseUrl => fetchFromAddon(baseUrl));
+        const results = await Promise.allSettled(requests);
+        
+        let allStreams = [];
+        for (const r of results) {
+            if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+                allStreams = allStreams.concat(r.value);
+            }
+        }
 
         const results = await Promise.allSettled(requests);
         let allStreams = [];
