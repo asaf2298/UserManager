@@ -1,7 +1,7 @@
 import fetch from 'node-fetch';
 
 const PROFILES = {
-    everything: { maxResults: 25, maxSizeGB: Infinity, minSeedersUncached: 1, hasHDR: true, hasHDAudio: true, timeoutMs: 18000 },
+    everything: { maxResults: 25, maxSizeGB: Infinity, minSeedersUncached: 1, hasHDR: true, hasHDAudio: true, timeoutMs: 30000 },
     family: { maxResults: 7, maxSizeGB: 30, minSeedersUncached: 5, hasHDR: true, hasHDAudio: true, timeoutMs: 10000 },
     friends_light: { maxResults: 7, maxSizeGB: 30, minSeedersUncached: 5, hasHDR: true, hasHDAudio: true, timeoutMs: 10000 },
     friends_heavy: { maxResults: 25, maxSizeGB: Infinity, minSeedersUncached: 5, hasHDR: true, hasHDAudio: true, timeoutMs: 18000 }
