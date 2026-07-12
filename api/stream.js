@@ -12,6 +12,8 @@ const REGEX_HDR_FALLBACK = /(fallback|hdr10\+?(\s|-)compatible|hybrid)/i;
 const REGEX_HD_AUDIO = /(dts(-hd|:x|x|ma)?|truehd|atmos)/i;
 const REGEX_SIZE = /(\d+(?:\.\d+)?)\s*(GB|MB)/i;
 const REGEX_SEEDERS = /(?:👤|seeders?:?)\s*(\d+)/i;
+// ביטוי רגולרי לזיהוי כל סוגי התגיות של Cached כדי שנוכל למחוק אותן
+const REGEX_CACHED_TAGS = /\[?(torbox\+|rd\+|ad\+|pm\+|cached|real-?debrid|all-?debrid|premiumize)\]?/gi;
 
 function getTextForAnalysis(stream) {
     return ((stream.name || '') + ' ' + (stream.title || '') + ' ' + (stream.description || '')).toLowerCase();
@@ -64,12 +66,31 @@ export default async function handler(req, res) {
             return res.status(400).json({ streams: [] });
         }
 
-        const user = urlParts[streamIdx - 1];
+        const userKey = urlParts[streamIdx - 1];
         const type = urlParts[streamIdx + 1];
         const idWithExt = urlParts[streamIdx + 2];
         
+        // נתיב עוקף עבור ערוצי טלוויזיה
+        if (type === 'tv' || type === 'channel') {
+            const tvAddonUrl = process.env.TV_ADDON_URL;
+            if (!tvAddonUrl) return res.status(200).json({ streams: [] });
+            
+            try {
+                const targetUrl = `${tvAddonUrl.replace(/\/$/, '')}/stream/${type}/${idWithExt}`;
+                const tvRes = await fetch(targetUrl);
+                if (tvRes.ok) {
+                    const tvData = await tvRes.json();
+                    return res.status(200).json(tvData);
+                }
+            } catch (e) {
+                console.error('TV Stream Error:', e);
+            }
+            return res.status(200).json({ streams: [] });
+        }
+
+        // --- המשך הלוגיקה המקורית לסרטים/סדרות/אנימה ---
         const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
-        const profileConfig = configs[user]?.profile || 'friends_light';
+        const profileConfig = configs[userKey]?.profile || 'friends_light';
         const profile = PROFILES[profileConfig] || PROFILES.friends_light;
         
         const addons = (process.env.ADDON_URLS || '').split(',').map(u => u.trim()).filter(Boolean);
@@ -101,7 +122,6 @@ export default async function handler(req, res) {
             }
         }
 
-        // 1. Deduplication (ניקוי כפילויות)
         const uniqueStreamsMap = new Map();
         for (const stream of allStreams) {
             const key = stream.infoHash || stream.url || stream.title;
@@ -111,7 +131,6 @@ export default async function handler(req, res) {
         }
         let filteredStreams = Array.from(uniqueStreamsMap.values());
 
-        // 2. Business Logic Filtering
         filteredStreams = filteredStreams.filter(stream => {
             const isStreamCached = isCached(stream);
             const isStreamUsenet = isUsenet(stream);
@@ -134,7 +153,6 @@ export default async function handler(req, res) {
             return true;
         });
 
-        // 3. Sorting
         filteredStreams.sort((a, b) => {
             const textA = getTextForAnalysis(a);
             const textB = getTextForAnalysis(b);
@@ -170,7 +188,23 @@ export default async function handler(req, res) {
             return resB - resA;
         });
 
-        // 4. AnimeIL Rule
+        // החלפת טקסט הכפתורים למשתמש (UI Formatting)
+        filteredStreams = filteredStreams.map(stream => {
+            if (isCached(stream)) {
+                // מחיקת הסימונים הישנים
+                let cleanName = (stream.name || '').replace(REGEX_CACHED_TAGS, '').trim();
+                let cleanTitle = (stream.title || '').replace(REGEX_CACHED_TAGS, '').trim();
+                
+                // ניקוי תווים מיותרים שנשארו אחרי המחיקה (כמו קווים, פייפים או רווחים מיותרים)
+                cleanName = cleanName.replace(/^[\s|\-\n]+/, '').replace(/[\s|\-\n]+$/, '').trim();
+                
+                // הוספת התווית העברית החדשה
+                stream.name = cleanName ? `זמין לצפייה | ${cleanName}` : 'זמין לצפייה';
+                stream.title = cleanTitle;
+            }
+            return stream;
+        });
+
         if (type === 'anime') {
             const animeIL = filteredStreams.filter(s => isAnimeIL(s));
             const others = filteredStreams.filter(s => !isAnimeIL(s));
