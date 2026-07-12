@@ -1,10 +1,10 @@
 import fetch from 'node-fetch';
 
 const PROFILES = {
-    everything: { maxResults: 25, maxSizeGB: Infinity, minSeedersUncached: 1, hasHDR: true, hasHDAudio: true, timeoutMs: 30000 },
-    family: { maxResults: 7, maxSizeGB: 30, minSeedersUncached: 5, hasHDR: true, hasHDAudio: true, timeoutMs: 10000 },
-    friends_light: { maxResults: 7, maxSizeGB: 30, minSeedersUncached: 5, hasHDR: true, hasHDAudio: true, timeoutMs: 10000 },
-    friends_heavy: { maxResults: 25, maxSizeGB: Infinity, minSeedersUncached: 5, hasHDR: true, hasHDAudio: true, timeoutMs: 18000 }
+    everything: { maxResults: 25, maxSizeGB: Infinity, minSeedersUncached: 1, hasHDR: true, hasHDAudio: true, timeoutMs: 8500 },
+    family: { maxResults: 7, maxSizeGB: 30, minSeedersUncached: 5, hasHDR: true, hasHDAudio: true, timeoutMs: 4000 },
+    friends_light: { maxResults: 7, maxSizeGB: 30, minSeedersUncached: 5, hasHDR: true, hasHDAudio: true, timeoutMs: 3000 },
+    friends_heavy: { maxResults: 25, maxSizeGB: Infinity, minSeedersUncached: 5, hasHDR: true, hasHDAudio: true, timeoutMs: 8500 }
 };
 
 const REGEX_HDR = /(hdr10|dolby\s?vision|dovi|dv\b|hdr)/i;
@@ -24,7 +24,6 @@ function isCached(stream) {
 function isUsenet(stream) {
     return getTextForAnalysis(stream).includes('usenet') || getTextForAnalysis(stream).includes('nzb');
 }
-// פונקציה חדשה לזיהוי מקורות מועדפים (VIP)
 function isVIPSource(stream) {
     const sourceUrl = (stream._sourceBaseUrl || '').toLowerCase();
     const text = getTextForAnalysis(stream);
@@ -71,12 +70,10 @@ export default async function handler(req, res) {
         const userKey = urlParts[streamIdx - 1];
         const type = urlParts[streamIdx + 1];
         const idWithExt = urlParts[streamIdx + 2];
-        
-        // נתיב עוקף עבור ערוצי טלוויזיה
+
         if (type === 'tv' || type === 'channel') {
             const tvAddonUrl = process.env.TV_ADDON_URL;
             if (!tvAddonUrl) return res.status(200).json({ streams: [] });
-            
             try {
                 const targetUrl = `${tvAddonUrl.replace(/\/$/, '')}/stream/${type}/${idWithExt}`;
                 const tvRes = await fetch(targetUrl);
@@ -94,41 +91,54 @@ export default async function handler(req, res) {
         const profileConfig = configs[userKey]?.profile || 'friends_light';
         const profile = PROFILES[profileConfig] || PROFILES.friends_light;
         
-        // 1. שינוי המפריד ל-||| כדי למנוע קריסה מפסיקים פנימיים בלינקים
-        const addons = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
+        // שימוש במפריד ||| החדש כדי לשמור על לינקים מורכבים
+        const addons = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);[cite: 1]
         if (addons.length === 0) return res.status(200).json({ streams: [] });
 
-        // פונקציית שליפה מבודדת ומקבילית לכל אדאון בנפרד
+        // שליפה מופרדת ומקבילית המושפעת מטיימאאוט הפרופיל[cite: 1]
+        // שליפה מופרדת ומקבילית כולל מדידת זמנים מדויקת ללוג
         const fetchFromAddon = async (baseUrl) => {
             const controller = new AbortController();
-            // הגבלת זמן קשיחה של 4 שניות לאדאון כדי שלא יעבור את ה-10 שניות של ורסל
-            const timeoutId = setTimeout(() => controller.abort(), 4000); 
+            const timeoutId = setTimeout(() => controller.abort(), profile.timeoutMs); 
 
             const targetUrl = `${baseUrl.replace(/\/$/, '')}/stream/${type}/${idWithExt}`;
-            
             const headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'application/json, text/plain, */*'
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8'
             };
+
+            // נקודת התחלה למדידת הזמן
+            const startTime = performance.now();
 
             try {
                 const response = await fetch(targetUrl, { signal: controller.signal, headers });
+                
+                // חישוב הזמן שלקח לבקשה לחזור (במילישניות)
+                const durationMs = (performance.now() - startTime).toFixed(0);
+                
                 if (!response.ok) {
-                    console.error(`[Vecret Addon Error] ${baseUrl.substring(0, 40)}... Status: ${response.status}`);
+                    console.error(`[Vecret Timer] ❌ ${baseUrl.substring(0, 45)}... returned status ${response.status} after ${durationMs}ms`);
                     return [];
                 }
+                
                 const data = await response.json();
+                
+                // הדפסת לוג ירוק והחלטי עם זמן התגובה המדויק וכמות התוצאות
+                const streamCount = (data && Array.isArray(data.streams)) ? data.streams.length : 0;
+                console.log(`[Vecret Timer] ⏱️  ${baseUrl.substring(0, 45)}... responded in ${durationMs}ms (Found ${streamCount} streams)`);
+
                 if (data && Array.isArray(data.streams)) {
-                    // הזרקת כתובת מקור לצורך זיהוי VIP בקוד בהמשך
-                    data.streams.forEach(s => s._sourceBaseUrl = baseUrl);
+                    data.streams.forEach(s => s._sourceBaseUrl = baseUrl);[cite: 1]
                     return data.streams;
                 }
                 return [];
             } catch (err) {
+                const durationMs = (performance.now() - startTime).toFixed(0);
                 if (err.name === 'AbortError') {
-                    console.warn(`[Vecret Timeout skip] Addon ${baseUrl.substring(0, 40)}... took too long.`);
+                    console.warn(`[Vecret Timer] ⏱️  ${baseUrl.substring(0, 45)}... TIMEOUT hit after ${durationMs}ms!`);
                 } else {
-                    console.error(`[Vecret Fetch Failed] Addon ${baseUrl.substring(0, 40)}... Error: ${err.message}`);
+                    console.error(`[Vecret Timer] ❌ ${baseUrl.substring(0, 45)}... FAILED after ${durationMs}ms. Error: ${err.message}`);
                 }
                 return [];
             } finally {
@@ -136,36 +146,16 @@ export default async function handler(req, res) {
             }
         };
 
-        // 2. הרצת כל השילופת במקביל (Parallel Execution)
-        const requests = addons.map(baseUrl => fetchFromAddon(baseUrl));
-        const results = await Promise.allSettled(requests);
+        const promises = addons.map(baseUrl => fetchFromAddon(baseUrl));
+        const settledResults = await Promise.allSettled(promises);
         
         let allStreams = [];
-        for (const r of results) {
+        for (const r of settledResults) {
             if (r.status === 'fulfilled' && Array.isArray(r.value)) {
                 allStreams = allStreams.concat(r.value);
             }
         }
 
-        const results = await Promise.allSettled(requests);
-        let allStreams = [];
-        for (const r of results) {
-            if (r.status === 'fulfilled' && r.value && Array.isArray(r.value.streams)) {
-                allStreams = allStreams.concat(r.value.streams);
-            }
-        }
-        
-        // לוג תחקור זמני - להבין מה התוספים מחזירים לנו
-        console.log(`[Vecret Debug] Total streams found: ${allStreams.length}`);
-        if (allStreams.length > 0) {
-            console.log(`[Vecret Debug] First stream sample:`, JSON.stringify({
-                name: allStreams[0].name,
-                title: allStreams[0].title,
-                url: allStreams[0].url ? allStreams[0].url.substring(0, 50) + "..." : "No URL",
-                externalUrl: allStreams[0].externalUrl
-            }));
-        }
-        
         const uniqueStreamsMap = new Map();
         for (const stream of allStreams) {
             const key = stream.infoHash || stream.url || stream.title;
@@ -201,7 +191,6 @@ export default async function handler(req, res) {
             const vipA = isVIPSource(a);
             const vipB = isVIPSource(b);
             
-            // הכלל החזק ביותר - מקורות מועדפים תמיד מוקפצים למעלה
             if (vipA && !vipB) return -1;
             if (!vipA && vipB) return 1;
 
@@ -243,14 +232,11 @@ export default async function handler(req, res) {
             if (isCached(stream)) {
                 let cleanName = (stream.name || '').replace(REGEX_CACHED_TAGS, '').trim();
                 let cleanTitle = (stream.title || '').replace(REGEX_CACHED_TAGS, '').trim();
-                
                 cleanName = cleanName.replace(/^[\s|\-\n]+/, '').replace(/[\s|\-\n]+$/, '').trim();
                 
                 stream.name = cleanName ? `זמין לצפייה | ${cleanName}` : 'זמין לצפייה';
                 stream.title = cleanTitle;
             }
-            
-            // מחיקת שדה העזר כדי לשמור על JSON נקי עבור סטרימיו
             delete stream._sourceBaseUrl;
             return stream;
         });
