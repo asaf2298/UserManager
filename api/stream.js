@@ -31,7 +31,7 @@ function isVIPSource(stream) {
 }
 function getSeeders(stream) {
     const match = getTextForAnalysis(stream).match(REGEX_SEEDERS);
-    return match ? parseInt(match[1], 10) : 0;
+    return match ? parseInt(match[1], 10) : null; // null אומר שאין מידע בכלל
 }
 function getSizeGB(stream) {
     if (stream.size) return stream.size / (1024 ** 3);
@@ -168,9 +168,15 @@ export default async function handler(req, res) {
             const sizeGB = getSizeGB(stream);
             const text = getTextForAnalysis(stream);
 
-            if (!isStreamCached && !isStreamUsenet && seeders === 0) return false;
             if (sizeGB > profile.maxSizeGB) return false;
-            if (!isStreamCached && !isStreamUsenet && seeders < profile.minSeedersUncached) return false;
+            
+            // זורקים לפח רק טורנטים שבוודאות מתים (0 סידרים)
+            if (!isStreamCached && !isStreamUsenet && seeders === 0) return false;
+            
+            // לשאר הפרופילים, דורשים מינימום סידרים רק אם יש מידע (לא null)
+            if (profileConfig !== 'everything') {
+                if (!isStreamCached && !isStreamUsenet && seeders !== null && seeders < profile.minSeedersUncached) return false;
+            }
 
             if (!profile.hasHDR) {
                 const hasHDRTag = REGEX_HDR.test(text);
@@ -207,6 +213,8 @@ export default async function handler(req, res) {
                 if (qA !== qB) return qB - qA;
                 if (resA !== resB) return resB - resA;
                 if (sizeA !== sizeB) return sizeB - sizeA;
+                // מיון לפי סידרים במקרה ששניהם לא בקאש
+                if (!cachedA && !cachedB && valSeedA !== valSeedB) return valSeedB - valSeedA;
                 return cachedA === cachedB ? 0 : (cachedA ? 1 : -1);
             }
             
