@@ -75,7 +75,8 @@ export default async function handler(req, res) {
             const tvAddonUrl = process.env.TV_ADDON_URL;
             if (!tvAddonUrl) return res.status(200).json({ streams: [] });
             try {
-                const targetUrl = `${tvAddonUrl.replace(/\/$/, '')}/stream/${type}/${idWithExt}`;
+                const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
+                const targetUrl = `${cleanTvUrl}/stream/${type}/${idWithExt}`;
                 const tvRes = await fetch(targetUrl);
                 if (tvRes.ok) {
                     const tvData = await tvRes.json();
@@ -223,7 +224,36 @@ export default async function handler(req, res) {
             return resB - resA;
         });
 
-        filteredStreams = filteredStreams.map(stream => {
+        // --- לוגיקת שריון מקומות ---
+        // מפצלים את התוצאות המסודרות לכאלו שבקאש וכאלו שלא
+        // --- לוגיקת חיתוך ושריון מקומות לפי פרופיל ---
+        let finalSliced = [];
+
+        if (profileConfig === 'friends_heavy') {
+            // עבור חברים כבדים: שריון של 2 מקומות לפחות לטורנטים רגילים (Uncached) בסוף
+            const cachedList = [];
+            const uncachedList = [];
+            
+            filteredStreams.forEach(stream => {
+                if (isCached(stream)) cachedList.push(stream);
+                else uncachedList.push(stream);
+            });
+
+            const maxTotal = profile.maxResults;
+            const uncachedSlots = Math.min(2, uncachedList.length);
+            const cachedSlots = Math.min(cachedList.length, maxTotal - uncachedSlots);
+            
+            const remainingSpots = maxTotal - cachedSlots;
+            const actualUncached = uncachedList.slice(0, remainingSpots);
+            
+            finalSliced = [...cachedList.slice(0, cachedSlots), ...actualUncached];
+        } else {
+            // עבור everything (ו-light): פשוט לוקחים את התוצאות הכי טובות מהטופ
+            finalSliced = filteredStreams.slice(0, profile.maxResults);
+        }
+
+        // --- עיצוב התגיות ומחיקת שרידי לינקים פנימיים ---
+        finalSliced = finalSliced.map(stream => {
             if (isCached(stream)) {
                 let cleanName = (stream.name || '').replace(REGEX_CACHED_TAGS, '').trim();
                 let cleanTitle = (stream.title || '').replace(REGEX_CACHED_TAGS, '').trim();
@@ -236,7 +266,7 @@ export default async function handler(req, res) {
             return stream;
         });
 
-        return res.status(200).json({ streams: filteredStreams.slice(0, profile.maxResults) });
+        return res.status(200).json({ streams: finalSliced });
 
     } catch (error) {
         console.error('Stream Proxy Error:', error);
