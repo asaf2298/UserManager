@@ -197,8 +197,8 @@ export default async function handler(req, res) {
 
             if (sizeGB > profile.maxSizeGB) return false;
             
-            // זורקים לפח רק טורנטים שבוודאות מתים (0 סידרים)
-            if (!isStreamCached && !isStreamUsenet && seeders === 0) return false;
+            // מחמיר פחות: זורק רק אם יש לנו מידע וזה אכן 0
+            if (!isStreamCached && !isStreamUsenet && seeders !== null && seeders === 0) return false;
             
             // לשאר הפרופילים, דורשים מינימום סידרים רק אם יש מידע (לא null)
             if (profileConfig !== 'everything') {
