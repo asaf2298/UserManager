@@ -100,21 +100,36 @@ export default async function handler(req, res) {
         const requests = addons.map(baseUrl => {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), profile.timeoutMs);
-            return fetch(`${baseUrl.replace(/\/$/, '')}/stream/${type}/${idWithExt}`, { signal: controller.signal })
-                .then(r => {
-                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            
+            // יצירת כותרות דמויות דפדפן אמיתי כדי לעקוף חסימות שרתים
+            const headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'en-US,en;q=0.9,he;q=0.8'
+            };
+
+            return fetch(`${baseUrl.replace(/\/$/, '')}/stream/${type}/${idWithExt}`, { 
+                signal: controller.signal,
+                headers: headers
+            })
+                .then(async r => {
+                    if (!r.ok) {
+                        // לוג קריטי: אם התוסף מחזיר 403 או 429, נדע מזה מיד בלוגים
+                        console.error(`[Vecret HTTP Error] ${baseUrl.substring(0, 40)}... returned status ${r.status}`);
+                        throw new Error(`HTTP ${r.status}`);
+                    }
                     return r.json();
                 })
                 .then(data => {
                     clearTimeout(timeoutId);
-                    // הזרקת כתובת המקור לתוך הסטרים כדי שנוכל לזהות אותו בשלב המיון
                     if (data && Array.isArray(data.streams)) {
                         data.streams.forEach(s => s._sourceBaseUrl = baseUrl);
                     }
                     return data;
                 })
-                .catch(() => {
+                .catch((err) => {
                     clearTimeout(timeoutId);
+                    console.error(`[Vecret Fetch Failed] Connection to ${baseUrl.substring(0, 40)}... failed: ${err.message}`);
                     return { streams: [] };
                 });
         });
