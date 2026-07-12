@@ -1,5 +1,19 @@
 import fetch from 'node-fetch';
 
+const ALLOWED_LANGS = new Set([
+    'he', 'heb', 'hebrew', 'iw', 'he-il', 'עברית',
+    'en', 'eng', 'english', 'en-us', 'en-gb',
+    'ru', 'rus', 'russian',
+    'submaker', 'forced', 'hi'
+]);
+
+function isAllowedLang(lang, title) {
+    if (!lang && !title) return false;
+    const normalizedLang = (lang || '').toLowerCase().trim();
+    const normalizedTitle = (title || '').toLowerCase().trim();
+    return ALLOWED_LANGS.has(normalizedLang) || ALLOWED_LANGS.has(normalizedTitle);
+}
+
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -72,7 +86,9 @@ export default async function handler(req, res) {
                 allSubs = allSubs.concat(r.value.subtitles);
             }
         }
-        
+        // תכניס את זה לפני הפילטר של השפות
+        console.log(`[Subtitles Debug] Found ${data.subtitles.length} subtitles from addon.`);
+        data.subtitles.forEach(sub => console.log(`[Subtitles Debug] Found: ${sub.lang} - ${sub.id}`));
         // --- סינון רשימה לבנה סלחני במיוחד ---
         allSubs = allSubs.filter(sub => {
             // מאחדים את כל הנתונים של הכתובית לטקסט אחד ארוך
@@ -83,7 +99,7 @@ export default async function handler(req, res) {
             const isRus = fullText.includes('rus') || fullText.includes('רוסית');
             
             // זיהוי רחב ל-Submaker שמכסה את כל השגיאות והשמות השונים
-            const isSubmaker = fullText.includes('submaker') || fullText.includes('make hebrew') || fullText.includes('halfhouse');
+            const isSubmaker = fullText.includes('submaker') || fullText.includes('make hebrew');    // || fullText.includes('halfhouse');
             
             return isHeb || isEng || isRus || isSubmaker;
         });
@@ -110,7 +126,28 @@ export default async function handler(req, res) {
             if (!isHebA && isHebB) return 1;
             return 0;
         });
+        // ... אחרי שקיבלת את ה-data מהתוסף ...
 
+    if (data && Array.isArray(data.subtitles)) {
+    // כאן אתה מוחק את הסינון הישן והפשוט ומדביק את זה:
+    
+    // 1. סינון שפות חדש
+    data.subtitles = data.subtitles.filter(sub => {
+        return isAllowedLang(sub.lang, sub.title);
+    });
+
+    // 2. מיון שפות חדש
+    data.subtitles.sort((a, b) => {
+        const isHebA = ['he', 'heb', 'hebrew', 'iw', 'עברית'].includes((a.lang || '').toLowerCase());
+        const isHebB = ['he', 'heb', 'hebrew', 'iw', 'עברית'].includes((b.lang || '').toLowerCase());
+        
+        if (isHebA && !isHebB) return -1;
+        if (!isHebA && isHebB) return 1;
+        return 0;
+    });
+    }
+
+    // ... המשך הקוד ששולח את התשובה (res.status...) ...
         return res.status(200).json({ subtitles: uniqueSubs });
 
     } catch (error) {
