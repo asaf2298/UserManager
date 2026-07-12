@@ -1,10 +1,10 @@
 import fetch from 'node-fetch';
 
 const PROFILES = {
-    everything: { maxResults: 25, maxSizeGB: Infinity, minSeedersUncached: 1, hasHDR: true, hasHDAudio: true, timeoutMs: 8500 },
-    family: { maxResults: 7, maxSizeGB: 30, minSeedersUncached: 5, hasHDR: true, hasHDAudio: true, timeoutMs: 4000 },
-    friends_light: { maxResults: 7, maxSizeGB: 30, minSeedersUncached: 5, hasHDR: true, hasHDAudio: true, timeoutMs: 3000 },
-    friends_heavy: { maxResults: 25, maxSizeGB: Infinity, minSeedersUncached: 5, hasHDR: true, hasHDAudio: true, timeoutMs: 8500 }
+    everything: { maxResults: 30, maxSizeGB: Infinity, minSeedersUncached: 1, hasHDR: true, hasHDAudio: true, timeoutMs: 10000 },
+    family: { maxResults: 10, maxSizeGB: 30, minSeedersUncached: 5, hasHDR: true, hasHDAudio: true, timeoutMs: 9000 },
+    friends_light: { maxResults: 10, maxSizeGB: 30, minSeedersUncached: 5, hasHDR: true, hasHDAudio: true, timeoutMs: 9000 },
+    friends_heavy: { maxResults: 30, maxSizeGB: Infinity, minSeedersUncached: 5, hasHDR: true, hasHDAudio: true, timeoutMs: 9000 }
 };
 
 const REGEX_HDR = /(hdr10|dolby\s?vision|dovi|dv\b|hdr)/i;
@@ -142,16 +142,43 @@ export default async function handler(req, res) {
             }
         };
 
-        const promises = addons.map(baseUrl => fetchFromAddon(baseUrl));
-        const settledResults = await Promise.allSettled(promises);
-        
+        const promises = addonUrls.map(url => fetchFromAddon(url));
+
+        // --- מערכת ניהול זמנים דינמית חכמה (מותאמת למגבלת Vercel) ---
         let allStreams = [];
-        for (const r of settledResults) {
-            if (r.status === 'fulfilled' && Array.isArray(r.value)) {
-                allStreams = allStreams.concat(r.value);
-            }
+        let pendingCount = promises.length;
+
+        // רצים על ההבטחות ויוצרים מנגנון מעקב בזמן אמת
+        const trackPromises = promises.map(p => {
+            return p.then(val => {
+                if (Array.isArray(val)) {
+                    allStreams = allStreams.concat(val);
+                }
+                pendingCount--; // מסמנים שהתוסף סיים
+                return val;
+            }).catch(e => {
+                pendingCount--;
+            });
+        });
+
+        // שלב 1: מחכים עד שכולם יסיימו, או מקסימום 5 שניות
+        await Promise.race([
+            Promise.allSettled(trackPromises),
+            new Promise(resolve => setTimeout(resolve, 5000))
+        ]);
+
+        // שלב 2: אם עברו 5 שניות, יש עדיין תוספים שרצים, ויש לנו פחות מ-3 תוצאות - נמתין עוד 4 שניות גג (סה"כ 9 שניות)
+        if (pendingCount > 0 && allStreams.length < 3) {
+            console.log(`[Vecret Timer] ⚠️ Only ${allStreams.length} streams found. Waiting up to 4 more seconds for slower addons (Usenet/Yuki)...`);
+            await Promise.race([
+                Promise.allSettled(trackPromises),
+                new Promise(resolve => setTimeout(resolve, 4000))
+            ]);
         }
 
+        // מעבירים את כל הסטרים שנאספו להמשך המיון והסינון בקוד
+        let filteredStreams = allStreams;
+        
         const uniqueStreamsMap = new Map();
         for (const stream of allStreams) {
             const key = stream.infoHash || stream.url || stream.title;
