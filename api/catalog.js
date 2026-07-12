@@ -16,15 +16,18 @@ export default async function handler(req, res) {
         const catalogPathEnd = urlParts.slice(catIdx + 2).join('/');
         
         const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
-        const userConfig = configs[userKey];
-        const tvAddonUrl = process.env.TV_ADDON_URL;
+        const userConfig = configs[userKey] || {};
+        
+        // ניקוי המניפסט מיד בשליפה מההגדרות
+        const tvAddonUrl = (process.env.TV_ADDON_URL || '').replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
+        const catalogBaseUrl = (userConfig.catalogBase || '').replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
         
         let targetUrl = '';
 
         if ((type === 'tv' || type === 'channel') && tvAddonUrl) {
-            targetUrl = `${tvAddonUrl.replace(/\/$/, '')}/catalog/${type}/${catalogPathEnd}`;
-        } else if (userConfig && userConfig.catalogBase) {
-            targetUrl = `${userConfig.catalogBase.replace(/\/$/, '')}/catalog/${type}/${catalogPathEnd}`;
+            targetUrl = `${tvAddonUrl}/catalog/${type}/${catalogPathEnd}`;
+        } else if (catalogBaseUrl) {
+            targetUrl = `${catalogBaseUrl}/catalog/${type}/${catalogPathEnd}`;
         } else {
             return res.status(404).json({ metas: [] });
         }
