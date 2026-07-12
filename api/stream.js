@@ -12,7 +12,6 @@ const REGEX_HDR_FALLBACK = /(fallback|hdr10\+?(\s|-)compatible|hybrid)/i;
 const REGEX_HD_AUDIO = /(dts(-hd|:x|x|ma)?|truehd|atmos)/i;
 const REGEX_SIZE = /(\d+(?:\.\d+)?)\s*(GB|MB)/i;
 const REGEX_SEEDERS = /(?:👤|seeders?:?)\s*(\d+)/i;
-// ביטוי רגולרי לזיהוי כל סוגי התגיות של Cached כדי שנוכל למחוק אותן
 const REGEX_CACHED_TAGS = /\[?(torbox\+|rd\+|ad\+|pm\+|cached|real-?debrid|all-?debrid|premiumize)\]?/gi;
 
 function getTextForAnalysis(stream) {
@@ -25,8 +24,11 @@ function isCached(stream) {
 function isUsenet(stream) {
     return getTextForAnalysis(stream).includes('usenet') || getTextForAnalysis(stream).includes('nzb');
 }
-function isAnimeIL(stream) {
-    return getTextForAnalysis(stream).includes('animeil');
+// פונקציה חדשה לזיהוי מקורות מועדפים (VIP)
+function isVIPSource(stream) {
+    const sourceUrl = (stream._sourceBaseUrl || '').toLowerCase();
+    const text = getTextForAnalysis(stream);
+    return sourceUrl.includes('kan-box') || sourceUrl.includes('animeil') || text.includes('animeil');
 }
 function getSeeders(stream) {
     const match = getTextForAnalysis(stream).match(REGEX_SEEDERS);
@@ -88,7 +90,6 @@ export default async function handler(req, res) {
             return res.status(200).json({ streams: [] });
         }
 
-        // --- המשך הלוגיקה המקורית לסרטים/סדרות/אנימה ---
         const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
         const profileConfig = configs[userKey]?.profile || 'friends_light';
         const profile = PROFILES[profileConfig] || PROFILES.friends_light;
@@ -106,6 +107,10 @@ export default async function handler(req, res) {
                 })
                 .then(data => {
                     clearTimeout(timeoutId);
+                    // הזרקת כתובת המקור לתוך הסטרים כדי שנוכל לזהות אותו בשלב המיון
+                    if (data && Array.isArray(data.streams)) {
+                        data.streams.forEach(s => s._sourceBaseUrl = baseUrl);
+                    }
                     return data;
                 })
                 .catch(() => {
@@ -154,6 +159,13 @@ export default async function handler(req, res) {
         });
 
         filteredStreams.sort((a, b) => {
+            const vipA = isVIPSource(a);
+            const vipB = isVIPSource(b);
+            
+            // הכלל החזק ביותר - מקורות מועדפים תמיד מוקפצים למעלה
+            if (vipA && !vipB) return -1;
+            if (!vipA && vipB) return 1;
+
             const textA = getTextForAnalysis(a);
             const textB = getTextForAnalysis(b);
             const cachedA = isCached(a);
@@ -188,28 +200,21 @@ export default async function handler(req, res) {
             return resB - resA;
         });
 
-        // החלפת טקסט הכפתורים למשתמש (UI Formatting)
         filteredStreams = filteredStreams.map(stream => {
             if (isCached(stream)) {
-                // מחיקת הסימונים הישנים
                 let cleanName = (stream.name || '').replace(REGEX_CACHED_TAGS, '').trim();
                 let cleanTitle = (stream.title || '').replace(REGEX_CACHED_TAGS, '').trim();
                 
-                // ניקוי תווים מיותרים שנשארו אחרי המחיקה (כמו קווים, פייפים או רווחים מיותרים)
                 cleanName = cleanName.replace(/^[\s|\-\n]+/, '').replace(/[\s|\-\n]+$/, '').trim();
                 
-                // הוספת התווית העברית החדשה
                 stream.name = cleanName ? `זמין לצפייה | ${cleanName}` : 'זמין לצפייה';
                 stream.title = cleanTitle;
             }
+            
+            // מחיקת שדה העזר כדי לשמור על JSON נקי עבור סטרימיו
+            delete stream._sourceBaseUrl;
             return stream;
         });
-
-        if (type === 'anime') {
-            const animeIL = filteredStreams.filter(s => isAnimeIL(s));
-            const others = filteredStreams.filter(s => !isAnimeIL(s));
-            filteredStreams = [...animeIL, ...others];
-        }
 
         return res.status(200).json({ streams: filteredStreams.slice(0, profile.maxResults) });
 
