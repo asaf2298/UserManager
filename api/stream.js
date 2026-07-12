@@ -186,7 +186,7 @@ export default async function handler(req, res) {
                 uniqueStreamsMap.set(key, stream);
             }
         }
-        let filteredStreams = Array.from(uniqueStreamsMap.values());
+        filteredStreams = Array.from(uniqueStreamsMap.values());
 
         filteredStreams = filteredStreams.filter(stream => {
             const isStreamCached = isCached(stream);
