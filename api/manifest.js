@@ -2,79 +2,66 @@ import fetch from 'node-fetch';
 
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     if (req.method === 'OPTIONS') return res.status(200).end();
 
     try {
         const urlParts = req.url.split('?')[0].split('/');
         const userKey = urlParts[1] || 'default';
         const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
-        
-        const userConfig = configs[userKey] || { name: 'Unknown', catalogBase: '', profile: 'friends_light' };
-        const displayName = userConfig.name || userKey;
+        const userConfig = configs[userKey] || { name: 'Unknown', catalogBase: '' };
 
-        let finalCatalogs = [];
+        let firstKanboxCatalog = null;  // הקטלוג הראשון מ-KANBOX
+        let aioCatalogs = [];           // כל הקטלוגים מ-AIOMETADATA
+        let restKanboxCatalogs = [];    // שאר הקטלוגים מ-KANBOX
 
-        // 1. משיכת קטלוג הטלוויזיה ודחיפתו למקום הראשון (כולל ניקוי manifest.json מההגדרות)
+        // 1. טיפול ב-Kan-Box (פיצול לראשון + שאר)
         const tvAddonUrl = process.env.TV_ADDON_URL;
         if (tvAddonUrl) {
             try {
                 const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-                const tvManifestUrl = `${cleanTvUrl}/manifest.json`;
-                
-                const tvRes = await fetch(tvManifestUrl, { timeout: 5000 });
+                const tvRes = await fetch(`${cleanTvUrl}/manifest.json`, { timeout: 4000 });
                 if (tvRes.ok) {
                     const tvManifest = await tvRes.json();
-                    if (tvManifest.catalogs) {
-                        const tvCatalogs = tvManifest.catalogs.map(cat => ({
-                            ...cat,
-                            showInHome: true // מכריח הופעה במסך הבית
-                        }));
-                        finalCatalogs.push(...tvCatalogs);
+                    
+                    if (tvManifest.catalogs && tvManifest.catalogs.length > 0) {
+                        // הקטלוג הראשון נשמר בנפרד
+                        firstKanboxCatalog = tvManifest.catalogs[0];
+                        // שאר הקטלוגים
+                        restKanboxCatalogs = tvManifest.catalogs.slice(1);
                     }
                 }
-            } catch (e) {
-                console.error('Failed to fetch TV catalogs:', e.message);
-            }
+            } catch (e) { console.error('Kan-Box fetch error:', e.message); }
         }
         
-        // 2. משיכת הקטלוגים של המשתמש מ-AIOMetaData (יופיעו אחרי הטלוויזיה, כולל ניקוי)
+        // 2. משיכת AIOMetaData
         if (userConfig.catalogBase) {
             try {
                 const cleanCatalogBase = userConfig.catalogBase.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-                const manifestUrl = `${cleanCatalogBase}/manifest.json`;
-                
-                const catRes = await fetch(manifestUrl, { timeout: 5000 });
+                const catRes = await fetch(`${cleanCatalogBase}/manifest.json`, { timeout: 4000 });
                 if (catRes.ok) {
                     const catManifest = await catRes.json();
-                    if (catManifest.catalogs) {
-                        finalCatalogs.push(...catManifest.catalogs);
-                    }
+                    if (catManifest.catalogs) aioCatalogs.push(...catManifest.catalogs);
                 }
-            } catch (e) {
-                console.error(`Failed to fetch external catalogs for user ${userKey}:`, e.message);
-            }
+            } catch (e) { console.error('AIO fetch error:', e.message); }
         }
 
-        const manifest = {
-            id: `com.vecret.${userKey}`,
-            version: "1.0.5",
-            name: `Vecret - ${displayName}`,
-            description: `Private Serverless Proxy`,
-            types: ["movie", "series", "anime", "tv", "channel"],
-            catalogs: finalCatalogs,
-            resources: [
-                "stream",
-                "subtitles",
-                ...(finalCatalogs.length > 0 ? ["catalog"] : [])
-            ],
-            idPrefixes: ["tt", "kitsu", "animeil"] // הוספתי תמיכה באנימה כדי שחיפושים יעבדו טוב יותר
-        };
+        // 3. הרכבת הסדר הסופי: קטלוג ראשון של KANBOX -> AIO -> שאר KANBOX
+        const finalCatalogs = [
+            ...(firstKanboxCatalog ? [firstKanboxCatalog] : []),
+            ...aioCatalogs,
+            ...restKanboxCatalogs
+        ];
 
-        return res.status(200).json(manifest);
+        return res.status(200).json({
+            id: `com.vecret.${userKey}`,
+            version: "2.2.0",
+            name: `Vecret - ${userConfig.name || userKey}`,
+            resources: ["stream", "subtitles", "catalog"],
+            types: ["movie", "series", "anime", "tv", "channel"],
+            catalogs: finalCatalogs
+            // אין idPrefixes = catchall לכל התכנים
+        });
     } catch (error) {
-        console.error('Manifest Error:', error);
         return res.status(500).json({ error: "Internal Server Error" });
     }
 }
