@@ -91,12 +91,11 @@ export default async function handler(req, res) {
         const profileConfig = configs[userKey]?.profile || 'friends_light';
         const profile = PROFILES[profileConfig] || PROFILES.friends_light;
         
-        // שימוש במפריד ||| החדש כדי לשמור על לינקים מורכבים
+        // פיצול לפי מפריד ||| החדש
         const addons = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);[cite: 1]
         if (addons.length === 0) return res.status(200).json({ streams: [] });
 
-        // שליפה מופרדת ומקבילית המושפעת מטיימאאוט הפרופיל[cite: 1]
-        // שליפה מופרדת ומקבילית כולל מדידת זמנים מדויקת ללוג
+        // שליפה מופרדת, מקבילית ומנוטרת בזמנים[cite: 1]
         const fetchFromAddon = async (baseUrl) => {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), profile.timeoutMs); 
@@ -108,13 +107,10 @@ export default async function handler(req, res) {
                 'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8'
             };
 
-            // נקודת התחלה למדידת הזמן
             const startTime = performance.now();
 
             try {
                 const response = await fetch(targetUrl, { signal: controller.signal, headers });
-                
-                // חישוב הזמן שלקח לבקשה לחזור (במילישניות)
                 const durationMs = (performance.now() - startTime).toFixed(0);
                 
                 if (!response.ok) {
@@ -123,8 +119,6 @@ export default async function handler(req, res) {
                 }
                 
                 const data = await response.json();
-                
-                // הדפסת לוג ירוק והחלטי עם זמן התגובה המדויק וכמות התוצאות
                 const streamCount = (data && Array.isArray(data.streams)) ? data.streams.length : 0;
                 console.log(`[Vecret Timer] ⏱️  ${baseUrl.substring(0, 45)}... responded in ${durationMs}ms (Found ${streamCount} streams)`);
 
