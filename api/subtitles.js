@@ -16,7 +16,7 @@ export default async function handler(req, res) {
         const type = urlParts[subIdx + 1];
         const id = urlParts[subIdx + 2].replace('.json', '');
         
-        const subtitleUrls = (process.env.SUBTITLE_URLS || '').split(',').map(u => u.trim()).filter(Boolean);
+        const subtitleUrls = (process.env.SUBTITLE_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
         if (subtitleUrls.length === 0) return res.status(200).json({ subtitles: [] });
 
         const requests = subtitleUrls.map(url => 
