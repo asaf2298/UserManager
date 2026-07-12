@@ -240,9 +240,13 @@ export default async function handler(req, res) {
                 if (qA !== qB) return qB - qA;
                 if (resA !== resB) return resB - resA;
                 if (sizeA !== sizeB) return sizeB - sizeA;
-                // מיון לפי סידרים במקרה ששניהם לא בקאש
-                if (!cachedA && !cachedB && valSeedA !== valSeedB) return valSeedB - valSeedA;
-                return cachedA === cachedB ? 0 : (cachedA ? 1 : -1);
+                
+                // התיקון כאן: הגדרת המשתנים שחסרו
+                const seedA = getSeeders(a) || 0;
+                const seedB = getSeeders(b) || 0;
+                if (!cachedA && !cachedB && seedA !== seedB) return seedB - seedA;
+                
+                return cachedA === cachedB ? 0 : (cachedA ? -1 : 1);
             }
             
             if (profileConfig === 'friends_heavy') {
@@ -250,7 +254,7 @@ export default async function handler(req, res) {
                 if (usenetA !== usenetB) return usenetA ? -1 : 1;
                 if (resA !== resB) return resB - resA;
                 if (sizeA !== sizeB) return sizeB - sizeA;
-                return cachedA === cachedB ? 0 : (cachedA ? 1 : -1); 
+                return cachedA === cachedB ? 0 : (cachedA ? -1 : 1); 
             }
 
             if (cachedA !== cachedB) return cachedA ? -1 : 1;
