@@ -11,19 +11,23 @@ export default async function handler(req, res) {
         const catIdx = urlParts.indexOf('catalog');
         if (catIdx < 1) return res.status(400).json({ metas: [] });
 
-        const user = urlParts[catIdx - 1];
+        const userKey = urlParts[catIdx - 1];
         const type = urlParts[catIdx + 1];
-        // לוקח את כל שאר הנתיב (כמו tmdb.json או tmdb/genre=Action.json)
         const catalogPathEnd = urlParts.slice(catIdx + 2).join('/');
         
         const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
-        const userConfig = configs[user];
+        const userConfig = configs[userKey];
+        const tvAddonUrl = process.env.TV_ADDON_URL;
+        
+        let targetUrl = '';
 
-        if (!userConfig || !userConfig.catalogBase) {
+        if ((type === 'tv' || type === 'channel') && tvAddonUrl) {
+            targetUrl = `${tvAddonUrl.replace(/\/$/, '')}/catalog/${type}/${catalogPathEnd}`;
+        } else if (userConfig && userConfig.catalogBase) {
+            targetUrl = `${userConfig.catalogBase.replace(/\/$/, '')}/catalog/${type}/${catalogPathEnd}`;
+        } else {
             return res.status(404).json({ metas: [] });
         }
-
-        const targetUrl = `${userConfig.catalogBase.replace(/\/$/, '')}/catalog/${type}/${catalogPathEnd}`;
         
         const fetchRes = await fetch(targetUrl);
         if (!fetchRes.ok) throw new Error(`HTTP ${fetchRes.status}`);
