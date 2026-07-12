@@ -73,6 +73,21 @@ export default async function handler(req, res) {
             }
         }
         
+        // --- סינון רשימה לבנה סלחני במיוחד ---
+        allSubs = allSubs.filter(sub => {
+            // מאחדים את כל הנתונים של הכתובית לטקסט אחד ארוך
+            const fullText = ((sub.lang || '') + ' ' + (sub.id || '') + ' ' + (sub.title || '') + ' ' + (sub.url || '')).toLowerCase();
+            
+            const isHeb = fullText.includes('heb') || fullText.includes('עברית');
+            const isEng = fullText.includes('eng') || fullText.includes('אנגלית');
+            const isRus = fullText.includes('rus') || fullText.includes('רוסית');
+            
+            // זיהוי רחב ל-Submaker שמכסה את כל השגיאות והשמות השונים
+            const isSubmaker = fullText.includes('submaker') || fullText.includes('make hebrew') || fullText.includes('halfhouse');
+            
+            return isHeb || isEng || isRus || isSubmaker;
+        });
+        
         // Deduplication based on ID AND Language
         const uniqueSubsMap = new Map();
         for (const sub of allSubs) {
