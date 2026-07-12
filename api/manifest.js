@@ -8,13 +8,36 @@ export default async function handler(req, res) {
 
     try {
         const urlParts = req.url.split('?')[0].split('/');
-        const user = urlParts[1] || 'default';
+        const userKey = urlParts[1] || 'default'; // כעת זה קוד ה-Trakt
         const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
-        const userConfig = configs[user] || { catalogBase: '', profile: 'friends_light' };
-
-        let externalCatalogs = [];
         
-        // משיכת הקטלוגים של המשתמש מ-AIOMetaData במקור
+        const userConfig = configs[userKey] || { name: 'Unknown', catalogBase: '', profile: 'friends_light' };
+        const displayName = userConfig.name || userKey;
+
+        let finalCatalogs = [];
+
+        // 1. משיכת קטלוג הטלוויזיה ודחיפתו למקום הראשון
+        const tvAddonUrl = process.env.TV_ADDON_URL;
+        if (tvAddonUrl) {
+            try {
+                const tvManifestUrl = `${tvAddonUrl.replace(/\/$/, '')}/manifest.json`;
+                const tvRes = await fetch(tvManifestUrl);
+                if (tvRes.ok) {
+                    const tvManifest = await tvRes.json();
+                    if (tvManifest.catalogs) {
+                        const tvCatalogs = tvManifest.catalogs.map(cat => ({
+                            ...cat,
+                            showInHome: true // מכריח הופעה במסך הבית
+                        }));
+                        finalCatalogs.push(...tvCatalogs);
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to fetch TV catalogs:', e);
+            }
+        }
+        
+        // 2. משיכת הקטלוגים של המשתמש מ-AIOMetaData (יופיעו אחרי הטלוויזיה)
         if (userConfig.catalogBase) {
             try {
                 const manifestUrl = `${userConfig.catalogBase.replace(/\/$/, '')}/manifest.json`;
@@ -22,25 +45,25 @@ export default async function handler(req, res) {
                 if (catRes.ok) {
                     const catManifest = await catRes.json();
                     if (catManifest.catalogs) {
-                        externalCatalogs = catManifest.catalogs;
+                        finalCatalogs.push(...catManifest.catalogs);
                     }
                 }
             } catch (e) {
-                console.error(`Failed to fetch external catalogs for user ${user}:`, e);
+                console.error(`Failed to fetch external catalogs for user ${userKey}:`, e);
             }
         }
 
         const manifest = {
-            id: `com.vecret.${user}`,
+            id: `com.vecret.${userKey}`,
             version: "1.0.0",
-            name: `Vecret - ${user}`,
+            name: `Vecret - ${displayName}`,
             description: `Private Serverless Proxy`,
-            types: ["movie", "series", "anime"],
-            catalogs: externalCatalogs,
+            types: ["movie", "series", "anime", "tv", "channel"],
+            catalogs: finalCatalogs,
             resources: [
                 "stream",
                 "subtitles",
-                ...(externalCatalogs.length > 0 ? ["catalog"] : [])
+                ...(finalCatalogs.length > 0 ? ["catalog"] : [])
             ],
             idPrefixes: ["tt"]
         };
