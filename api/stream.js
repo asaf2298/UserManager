@@ -126,7 +126,18 @@ export default async function handler(req, res) {
                 allStreams = allStreams.concat(r.value.streams);
             }
         }
-
+        
+        // לוג תחקור זמני - להבין מה התוספים מחזירים לנו
+        console.log(`[Vecret Debug] Total streams found: ${allStreams.length}`);
+        if (allStreams.length > 0) {
+            console.log(`[Vecret Debug] First stream sample:`, JSON.stringify({
+                name: allStreams[0].name,
+                title: allStreams[0].title,
+                url: allStreams[0].url ? allStreams[0].url.substring(0, 50) + "..." : "No URL",
+                externalUrl: allStreams[0].externalUrl
+            }));
+        }
+        
         const uniqueStreamsMap = new Map();
         for (const stream of allStreams) {
             const key = stream.infoHash || stream.url || stream.title;
