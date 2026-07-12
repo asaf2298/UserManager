@@ -8,7 +8,7 @@ export default async function handler(req, res) {
 
     try {
         const urlParts = req.url.split('?')[0].split('/');
-        const userKey = urlParts[1] || 'default'; // כעת זה קוד ה-Trakt
+        const userKey = urlParts[1] || 'default';
         const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
         
         const userConfig = configs[userKey] || { name: 'Unknown', catalogBase: '', profile: 'friends_light' };
@@ -16,12 +16,14 @@ export default async function handler(req, res) {
 
         let finalCatalogs = [];
 
-        // 1. משיכת קטלוג הטלוויזיה ודחיפתו למקום הראשון
+        // 1. משיכת קטלוג הטלוויזיה ודחיפתו למקום הראשון (כולל ניקוי manifest.json מההגדרות)
         const tvAddonUrl = process.env.TV_ADDON_URL;
         if (tvAddonUrl) {
             try {
-                const tvManifestUrl = `${tvAddonUrl.replace(/\/$/, '')}/manifest.json`;
-                const tvRes = await fetch(tvManifestUrl);
+                const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
+                const tvManifestUrl = `${cleanTvUrl}/manifest.json`;
+                
+                const tvRes = await fetch(tvManifestUrl, { timeout: 4000 });
                 if (tvRes.ok) {
                     const tvManifest = await tvRes.json();
                     if (tvManifest.catalogs) {
@@ -33,15 +35,17 @@ export default async function handler(req, res) {
                     }
                 }
             } catch (e) {
-                console.error('Failed to fetch TV catalogs:', e);
+                console.error('Failed to fetch TV catalogs:', e.message);
             }
         }
         
-        // 2. משיכת הקטלוגים של המשתמש מ-AIOMetaData (יופיעו אחרי הטלוויזיה)
+        // 2. משיכת הקטלוגים של המשתמש מ-AIOMetaData (יופיעו אחרי הטלוויזיה, כולל ניקוי)
         if (userConfig.catalogBase) {
             try {
-                const manifestUrl = `${userConfig.catalogBase.replace(/\/$/, '')}/manifest.json`;
-                const catRes = await fetch(manifestUrl);
+                const cleanCatalogBase = userConfig.catalogBase.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
+                const manifestUrl = `${cleanCatalogBase}/manifest.json`;
+                
+                const catRes = await fetch(manifestUrl, { timeout: 4000 });
                 if (catRes.ok) {
                     const catManifest = await catRes.json();
                     if (catManifest.catalogs) {
@@ -49,13 +53,13 @@ export default async function handler(req, res) {
                     }
                 }
             } catch (e) {
-                console.error(`Failed to fetch external catalogs for user ${userKey}:`, e);
+                console.error(`Failed to fetch external catalogs for user ${userKey}:`, e.message);
             }
         }
 
         const manifest = {
             id: `com.vecret.${userKey}`,
-            version: "1.0.0",
+            version: "1.0.5",
             name: `Vecret - ${displayName}`,
             description: `Private Serverless Proxy`,
             types: ["movie", "series", "anime", "tv", "channel"],
@@ -65,7 +69,7 @@ export default async function handler(req, res) {
                 "subtitles",
                 ...(finalCatalogs.length > 0 ? ["catalog"] : [])
             ],
-            idPrefixes: ["tt"]
+            idPrefixes: ["tt", "kitsu", "animeil"] // הוספתי תמיכה באנימה כדי שחיפושים יעבדו טוב יותר
         };
 
         return res.status(200).json(manifest);
