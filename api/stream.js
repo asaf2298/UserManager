@@ -98,14 +98,17 @@ export default async function handler(req, res) {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), profile.timeoutMs); 
 
-            const targetUrl = `${baseUrl.replace(/\/$/, '')}/stream/${type}/${idWithExt}`;
+            // הסרת המילה manifest.json מהקישור הבסיסי (במידה והוזנה) לפני הרכבת הנתיב
+            const cleanBaseUrl = baseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
+            const targetUrl = `${cleanBaseUrl}/stream/${type}/${idWithExt}`;
+            
             const headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'application/json, text/plain, */*',
                 'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8'
             };
 
-            const startTime = performance.now();
+        const startTime = performance.now();
 
             try {
                 const response = await fetch(targetUrl, { signal: controller.signal, headers });
