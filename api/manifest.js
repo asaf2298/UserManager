@@ -23,7 +23,7 @@ export default async function handler(req, res) {
                 const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
                 const tvManifestUrl = `${cleanTvUrl}/manifest.json`;
                 
-                const tvRes = await fetch(tvManifestUrl, { timeout: 4000 });
+                const tvRes = await fetch(tvManifestUrl, { timeout: 5000 });
                 if (tvRes.ok) {
                     const tvManifest = await tvRes.json();
                     if (tvManifest.catalogs) {
@@ -45,7 +45,7 @@ export default async function handler(req, res) {
                 const cleanCatalogBase = userConfig.catalogBase.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
                 const manifestUrl = `${cleanCatalogBase}/manifest.json`;
                 
-                const catRes = await fetch(manifestUrl, { timeout: 4000 });
+                const catRes = await fetch(manifestUrl, { timeout: 5000 });
                 if (catRes.ok) {
                     const catManifest = await catRes.json();
                     if (catManifest.catalogs) {
