@@ -94,7 +94,7 @@ export default async function handler(req, res) {
         
         const addons = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
         if (addons.length === 0) return res.status(200).json({ streams: [] });
-
+        
         const fetchFromAddon = async (baseUrl) => {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), profile.timeoutMs); 
@@ -142,7 +142,7 @@ export default async function handler(req, res) {
             }
         };
 
-        const promises = addonUrls.map(url => fetchFromAddon(url));
+        const promises = addons.map(url => fetchFromAddon(url));
 
         // --- מערכת ניהול זמנים דינמית חכמה (מותאמת למגבלת Vercel) ---
         let allStreams = [];
