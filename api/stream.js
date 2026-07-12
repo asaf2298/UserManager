@@ -91,11 +91,9 @@ export default async function handler(req, res) {
         const profileConfig = configs[userKey]?.profile || 'friends_light';
         const profile = PROFILES[profileConfig] || PROFILES.friends_light;
         
-        // פיצול לפי מפריד ||| החדש
-        const addons = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);[cite: 1]
+        const addons = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
         if (addons.length === 0) return res.status(200).json({ streams: [] });
 
-        // שליפה מופרדת, מקבילית ומנוטרת בזמנים[cite: 1]
         const fetchFromAddon = async (baseUrl) => {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), profile.timeoutMs); 
@@ -123,7 +121,7 @@ export default async function handler(req, res) {
                 console.log(`[Vecret Timer] ⏱️  ${baseUrl.substring(0, 45)}... responded in ${durationMs}ms (Found ${streamCount} streams)`);
 
                 if (data && Array.isArray(data.streams)) {
-                    data.streams.forEach(s => s._sourceBaseUrl = baseUrl);[cite: 1]
+                    data.streams.forEach(s => s._sourceBaseUrl = baseUrl);
                     return data.streams;
                 }
                 return [];
