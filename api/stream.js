@@ -7,6 +7,7 @@ const PROFILES = {
     friends_heavy: { maxResults: 30, maxSizeGB: Infinity, minSeedersUncached: 5, hasHDR: true, hasHDAudio: true, timeoutMs: 9150 }
 };
 
+// שמרנו לעתיד
 const REGEX_HDR = /(hdr10|dolby\s?vision|dovi|dv\b|hdr)/i;
 const REGEX_HDR_FALLBACK = /(fallback|hdr10\+?(\s|-)compatible|hybrid)/i;
 const REGEX_HD_AUDIO = /(dts(-hd|:x|x|ma)?|truehd|atmos)/i;
@@ -18,16 +19,28 @@ function getTextForAnalysis(stream) {
 }
 
 function isCached(stream) {
-    if (stream.infoHash) return false;
+    const text = getTextForAnalysis(stream);
+    
+    // 1. זיהוי אם המקור הוא Debrid (כולל tb ו-comet)
+    const hasCacheKeywords = /torbox|tb\b|comet|cached|rd\+|elfhosted/i.test(text);
+    
+    // 2. זיהוי חד-משמעי של טורנטים גולמיים (רק אם אין להם מילות מפתח של Debrid)
+    const isTorrent = (stream.url && (stream.url.startsWith('magnet:') || stream.url.toLowerCase().endsWith('.torrent'))) || (stream.infoHash && !hasCacheKeywords);
+    
+    // אם זה טורנט גולמי, נחזיר false כי הוא דורש הורדה
+    if (isTorrent) return false;
+
+    // 3. בדיקות תקינות לסטרים ישיר
     if (!stream.url) return false;
     
-    const text = getTextForAnalysis(stream);
-    if (text.includes('download') || text.includes('⬇️')) return false;
-    
+    // אם זה סטרים ישיר אבל לא זוהה כ-Debrid, נפסול אותו אם יש לו תיוגי הורדה
+    if (!hasCacheKeywords && (text.includes('download') || text.includes('⬇️'))) return false;
+
+    // 4. הגדרת סטרים ישיר (HTTP/HLS/Dash)
     const isDirectStream = stream.url.startsWith('http') || stream.url.startsWith('acestream');
-    const hasCacheKeywords = text.includes('torbox+') || text.includes('cached') || text.includes('rd+');
     
-    return hasCacheKeywords || isDirectStream;
+    // יחזיר true רק אם זה אכן סטרים ישיר או Debrid שמוכן לניגון מיידי
+    return isDirectStream || hasCacheKeywords;
 }
 
 function isUsenet(stream) {
@@ -89,7 +102,6 @@ export default async function handler(req, res) {
 
     console.log(`[ESAY DIAGNOSTIC - STREAM] 🟢 בקשת סטרים נכנסת: ${req.url}`);
 
-    // חילוץ מדויק של Headers לפי המפרט כדי לשמור על IP ומזהה של סטרימיו
     const clientIp = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '';
     const clientUA = req.headers['user-agent'] || 'Stremio/4.4.156';
 
@@ -123,7 +135,6 @@ export default async function handler(req, res) {
                 const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
                 const targetUrl = `${cleanTvUrl}/stream/series/${idWithExt}`;
                 
-                // הזרקת ה-Headers המקוריים לפי הנחיות ה-Kanbox!
                 const headers = { 
                     'User-Agent': clientUA,
                     'X-Forwarded-For': clientIp,
@@ -135,7 +146,6 @@ export default async function handler(req, res) {
                 console.log(`[ESAY DIAGNOSTIC - LIVE] 📥 סטטוס תגובה מ-Kanbox: ${tvRes.status}`);
                 if (tvRes.ok) {
                     const tvData = await tvRes.json();
-                    // העברת ה-behaviorHints כפי שהם מהתוסף (ללא דריסה)
                     const streamsCount = (tvData && Array.isArray(tvData.streams)) ? tvData.streams.length : 0;
                     console.log(`[ESAY DIAGNOSTIC - LIVE] ✅ נמצאו ${streamsCount} קישורים. תוכן אובייקט:`, JSON.stringify(tvData));
                     return res.status(200).json(tvData);
@@ -164,7 +174,6 @@ export default async function handler(req, res) {
             }
             const targetUrl = `${cleanBaseUrl}/stream/${forwardType}/${finalIdWithExt}`;
 
-            // העברת ה-Headers גם לשאר הספקים (פרקטיקה מומלצת לפרוקסי)
             const fetchHeaders = { 
                 'User-Agent': clientUA,
                 'X-Forwarded-For': clientIp 
@@ -237,7 +246,9 @@ export default async function handler(req, res) {
             const isStreamCached = isCached(stream);
             const isStreamUsenet = isUsenet(stream);
             const seeders = getSeeders(stream);
-            if (!isStreamCached && !isStreamUsenet && seeders !== null && seeders === 0) return false;
+            
+            // סינון לפי מינימום Seeders מתוך הפרופיל
+            if (!isStreamCached && !isStreamUsenet && seeders !== null && seeders < profile.minSeedersUncached) return false;
             
             return true;
         });
@@ -283,8 +294,10 @@ export default async function handler(req, res) {
                 const qA = getQualityWeight(getTextForAnalysis(a));
                 const qB = getQualityWeight(getTextForAnalysis(b));
                 if (qA !== qB) return qB - qA;
-                const seedA = getSeeders(a) || 0;
-                const seedB = getSeeders(b) || 0;
+                
+                // מתן חסינות לתכנים ללא כמות Seeders מפורשת
+                const seedA = getSeeders(a) !== null ? getSeeders(a) : profile.minSeedersUncached;
+                const seedB = getSeeders(b) !== null ? getSeeders(b) : profile.minSeedersUncached;
                 return seedB - seedA;
             });
         }
@@ -332,11 +345,14 @@ export default async function handler(req, res) {
             const resA = getResWeight(textA); const resB = getResWeight(textB);
             const sizeA = getSizeGB(a); const sizeB = getSizeGB(b);
 
+            // מתן חסינות גם במיון הסופי של הסטנדרט
+            const seedA = getSeeders(a) !== null ? getSeeders(a) : profile.minSeedersUncached; 
+            const seedB = getSeeders(b) !== null ? getSeeders(b) : profile.minSeedersUncached;
+
             if (profileConfig === 'everything') {
                 if (resA !== resB) return resB - resA;
                 if (qA !== qB) return qB - qA;
                 if (sizeA !== sizeB) return sizeB - sizeA;
-                const seedA = getSeeders(a) || 0; const seedB = getSeeders(b) || 0;
                 if (!cachedA && !cachedB && seedA !== seedB) return seedB - seedA;
                 return cachedA === cachedB ? 0 : (cachedA ? -1 : 1);
             } else {
@@ -350,15 +366,17 @@ export default async function handler(req, res) {
         });
 
         // ==========================================
-        // שילוב ה-VIP בראש הרשימה
+        // שילוב ה-VIP בראש הרשימה, וחיתוך מדויק לפי הפרופיל
         // ==========================================
         let finalSliced = [...vipStreams, ...standardResult];
+        
+        finalSliced = finalSliced.slice(0, profile.maxResults);
 
         finalSliced = finalSliced.map(stream => {
             const text = getTextForAnalysis(stream);
             const isVip = isVIPSource(stream);
             const isC = isCached(stream);
-            const hasDebridTag = /rd\+?|torbox|tb|ad\+?|pm\+?|cached|real-?debrid|premiumize/i.test(text);
+            const hasDebridTag = /rd\+?|torbox|tb\b|comet|ad\+?|pm\+?|cached|real-?debrid|premiumize/i.test(text);
 
             const REGEX_BRACKETS = /\[[^\]]*(torbox|tb|rd|ad|pm|cached|real-?debrid|all-?debrid|premiumize)[^\]]*\]/gi;
             const REGEX_PARENS = /\([^)]*(torbox|tb|rd|ad|pm|cached|real-?debrid|all-?debrid|premiumize)[^)]*\)/gi;
