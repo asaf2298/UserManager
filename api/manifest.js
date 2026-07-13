@@ -85,7 +85,7 @@ export default async function handler(req, res) {
             version: "2.4.0", // הקפצת גרסה חיונית בגלל שינוי ה-ID והשמות
             name: `Esay - ${userConfig.name || userKey}`,
             description: "Esay Aggregator with Unified Search & Israeli HTTP support",
-            resources: ["stream", "subtitles", "catalog", "meta"],
+            resources: ["stream", "subtitles", "catalog"],
             types: ["movie", "series", "anime", "tv", "channel"],
             catalogs: finalCatalogs
         });
