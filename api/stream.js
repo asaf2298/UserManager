@@ -128,15 +128,14 @@ export default async function handler(req, res) {
                     'User-Agent': clientUA,
                     'X-Forwarded-For': clientIp,
                     'Accept': 'application/json, text/plain, */*',
-                    'Accept-Encoding': 'gzip'
                 };
-                
                 console.log(`[ESAY DIAGNOSTIC - LIVE] 🚀 מוציא בקשה ל-Kanbox: ${targetUrl}. Headers:`, headers);
                 const tvRes = await fetch(targetUrl, { headers, timeout: 9500 });
                 
                 console.log(`[ESAY DIAGNOSTIC - LIVE] 📥 סטטוס תגובה מ-Kanbox: ${tvRes.status}`);
                 if (tvRes.ok) {
                     const tvData = await tvRes.json();
+                    // העברת ה-behaviorHints כפי שהם מהתוסף (ללא דריסה)
                     const streamsCount = (tvData && Array.isArray(tvData.streams)) ? tvData.streams.length : 0;
                     console.log(`[ESAY DIAGNOSTIC - LIVE] ✅ נמצאו ${streamsCount} קישורים. תוכן אובייקט:`, JSON.stringify(tvData));
                     return res.status(200).json(tvData);
