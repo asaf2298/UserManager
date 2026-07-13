@@ -301,18 +301,26 @@ export default async function handler(req, res) {
             const text = getTextForAnalysis(stream);
             const hasDebridTag = /rd\+?|torbox\+?|tb\+?|ad\+?|pm\+?|cached|real-?debrid|premiumize/i.test(text);
 
-            // מצמידים "זמין לצפייה" *אך ורק* אם זה שירות Debrid ודאי, ולא נוגעים בשמות של Kanbox
+            // 1. טיפול בשירותי Debrid - מקבלים "זמין לצפייה"
             if (hasDebridTag && !isVIPSource(stream)) {
                 const REGEX_CACHED = /\[?(torbox\+?|tb\+?|rd\+?|ad\+?|pm\+?|cached|real-?debrid|all-?debrid|premiumize)\]?/gi;
                 let cleanName = (stream.name || '').replace(REGEX_CACHED, '').trim();
                 let cleanTitle = (stream.title || '').replace(REGEX_CACHED, '').trim();
                 
-                // ניקוי סוגריים וקווים שנשארו בקצוות (הסיבה שהופיע לך TB] בתמונה)
                 cleanName = cleanName.replace(/^[\]|\]\s\-\n]+/, '').replace(/[\[|\[\s\-\n]+$/, '').trim();
                 
                 stream.name = cleanName ? `זמין לצפייה | ${cleanName}` : 'זמין לצפייה';
                 stream.title = cleanTitle;
+            } 
+            // 2. תוספת חדשה: טיפול בקישורי HTTP ישירים / Kanbox - מקבלים "מרשת דפדפן"
+            else if (isVIPSource(stream) || (stream.url && !stream.infoHash)) {
+                let cleanName = (stream.name || '').trim();
+                // מנקה קווים או רווחים מיותרים מההתחלה אם קיימים
+                cleanName = cleanName.replace(/^[\s|\-\n]+/, '').trim();
+                
+                stream.name = cleanName ? `מרשת דפדפן | ${cleanName}` : 'מרשת דפדפן';
             }
+
             delete stream._sourceBaseUrl;
             return stream;
         });
