@@ -19,7 +19,6 @@ function getTextForAnalysis(stream) {
 }
 function isCached(stream) {
     const text = getTextForAnalysis(stream);
-    // בודק אם יש לינק ישיר שמתחיל ב-http או ב-acestream
     const isDirectStream = stream.url && (stream.url.startsWith('http') || stream.url.startsWith('acestream'));
     return text.includes('torbox+') || text.includes('cached') || text.includes('rd+') || isDirectStream;
 }
@@ -33,7 +32,7 @@ function isVIPSource(stream) {
 }
 function getSeeders(stream) {
     const match = getTextForAnalysis(stream).match(REGEX_SEEDERS);
-    return match ? parseInt(match[1], 10) : null; // null אומר שאין מידע בכלל
+    return match ? parseInt(match[1], 10) : null; 
 }
 function getSizeGB(stream) {
     if (stream.size) return stream.size / (1024 ** 3);
@@ -80,7 +79,7 @@ export default async function handler(req, res) {
         const userKey = urlParts[streamIdx - 1];
         const type = urlParts[streamIdx + 1];
         const idWithExt = urlParts[streamIdx + 2];
-        const id = idWithExt.replace('.json', ''); // הגדרת מזהה נקי ללא סיומת לקראת הבדיקות
+        const id = idWithExt.replace('.json', '');
 
         if (type === 'tv' || type === 'channel') {
             const tvAddonUrl = process.env.TV_ADDON_URL;
@@ -88,7 +87,16 @@ export default async function handler(req, res) {
             try {
                 const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
                 const targetUrl = `${cleanTvUrl}/stream/${type}/${idWithExt}`;
-                const tvRes = await fetch(targetUrl);
+                
+                // תיקון 2: הזרקת Headers כדי למנוע חסימה של הערוצים החיים מ-Kanbox כבוטים
+                const headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'application/json, text/plain, */*',
+                    'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8'
+                };
+                
+                // הוספת timeout קשיח גם כאן ליתר ביטחון
+                const tvRes = await fetch(targetUrl, { headers, timeout: 9500 });
                 if (tvRes.ok) {
                     const tvData = await tvRes.json();
                     return res.status(200).json(tvData);
@@ -106,7 +114,6 @@ export default async function handler(req, res) {
         const addons = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
         if (addons.length === 0) return res.status(200).json({ streams: [] });
         
-        // הוספנו תמיכה ב-customIdWithExt כדי לאפשר שליחת שאילתות חיפוש טקסטואליות בצורה תקינה
         const fetchFromAddon = async (baseUrl, customIdWithExt = null) => {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), profile.timeoutMs); 
@@ -124,7 +131,13 @@ export default async function handler(req, res) {
             const startTime = performance.now();
 
             try {
-                const response = await fetch(targetUrl, { signal: controller.signal, headers });
+                // תיקון 4: הוספת timeout ברמת node-fetch כדי למנוע תקיעות של דקות ארוכות (הלוג ההזוי)
+                const response = await fetch(targetUrl, { 
+                    signal: controller.signal, 
+                    headers,
+                    timeout: profile.timeoutMs
+                });
+                
                 const durationMs = (performance.now() - startTime).toFixed(0);
                 
                 if (!response.ok) {
@@ -143,7 +156,7 @@ export default async function handler(req, res) {
                 return [];
             } catch (err) {
                 const durationMs = (performance.now() - startTime).toFixed(0);
-                if (err.name === 'AbortError') {
+                if (err.name === 'AbortError' || err.type === 'request-timeout') {
                     console.warn(`[Esay Timer] ⏱️  ${baseUrl.substring(0, 45)}... TIMEOUT hit after ${durationMs}ms!`);
                 } else {
                     console.error(`[Esay Timer] ❌ ${baseUrl.substring(0, 45)}... FAILED after ${durationMs}ms. Error: ${err.message}`);
@@ -156,23 +169,21 @@ export default async function handler(req, res) {
 
         let promises = addons.map(url => fetchFromAddon(url));
 
-        // --- מנגנון תרגום IMDB לשם לחיפוש בספקי HTTP ---
         if (id.startsWith('tt')) {
-            const movieName = await getMetaName(type, id);
+            // תיקון 1: גילוח נקודתיים בסדרות כדי שסינמטה תוכל להחזיר שם בעברית עבור Kanbox
+            const baseId = id.split(':')[0]; 
+            const movieName = await getMetaName(type, baseId);
+            
             if (movieName) {
                 console.log(`[Esay Search] Translating ${id} to "${movieName}" for HTTP providers...`);
-                
-                // יוצרים בקשות חיפוש טקסטואליות ומעבירים אותן כארגומנט שני לפונקציית השליפה
                 const textSearchPromises = addons.map(baseUrl => {
                     const searchParam = `search=${encodeURIComponent(movieName)}.json`;
                     return fetchFromAddon(baseUrl, searchParam);
                 });
-                
                 promises = promises.concat(textSearchPromises);
             }
         }
         
-        // --- מערכת ניהול זמנים דינמית חכמה ---
         let allStreams = [];
         let pendingCount = promises.length;
 
@@ -201,17 +212,44 @@ export default async function handler(req, res) {
             ]);
         }
 
-        let filteredStreams = allStreams;
-        
-        const uniqueStreamsMap = new Map();
+        // תיקון 3: לולאת כפילויות חכמה שמחזירה את ה-Uncached ומאות הלינקים של Comet!
+        let filteredStreams = [];
         for (const stream of allStreams) {
-            const key = stream.infoHash || stream.url || stream.title;
-            if (!uniqueStreamsMap.has(key)) {
-                uniqueStreamsMap.set(key, stream);
+            const sIsCached = isCached(stream);
+            const sSize = getSizeGB(stream);
+            
+            const isDuplicate = filteredStreams.some(existing => {
+                const eIsCached = isCached(existing);
+                
+                // קובץ Uncached וקובץ Cached לעולם לא ימחקו אחד את השני
+                if (sIsCached !== eIsCached) return false; 
+                
+                if (sIsCached) {
+                    // שני קבצי קאש: נבדוק כפילות לפי URL בלבד (כתובת הורדה ישירה)
+                    if (stream.url && existing.url) {
+                        return stream.url === existing.url;
+                    }
+                } else {
+                    // שני קבצי טורנט: נבדוק Hash + Title + Size עד הפרש 1MB
+                    if (stream.infoHash && existing.infoHash && stream.infoHash === existing.infoHash) {
+                        if (stream.title === existing.title) {
+                            const eSize = getSizeGB(existing);
+                            const diffMB = Math.abs(sSize - eSize) * 1024;
+                            if (diffMB <= 1.0) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                return false;
+            });
+
+            if (!isDuplicate) {
+                filteredStreams.push(stream);
             }
         }
-        filteredStreams = Array.from(uniqueStreamsMap.values());
 
+        // --- מכאן והלאה: הסינון, המיון, החיתוך ועיצוב השמות שלך - נשארו ללא שינוי! ---
         filteredStreams = filteredStreams.filter(stream => {
             const isStreamCached = isCached(stream);
             const isStreamUsenet = isUsenet(stream);
