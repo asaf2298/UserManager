@@ -7,7 +7,6 @@ const PROFILES = {
     friends_heavy: { maxResults: 30, maxSizeGB: Infinity, minSeedersUncached: 5, hasHDR: true, hasHDAudio: true, timeoutMs: 9150 }
 };
 
-// שמרנו לעתיד
 const REGEX_HDR = /(hdr10|dolby\s?vision|dovi|dv\b|hdr)/i;
 const REGEX_HDR_FALLBACK = /(fallback|hdr10\+?(\s|-)compatible|hybrid)/i;
 const REGEX_HD_AUDIO = /(dts(-hd|:x|x|ma)?|truehd|atmos)/i;
@@ -21,8 +20,8 @@ function getTextForAnalysis(stream) {
 function isCached(stream) {
     const text = getTextForAnalysis(stream);
     
-    // 1. זיהוי אם המקור הוא Debrid (כולל tb ו-comet)
-    const hasCacheKeywords = /torbox|tb\b|comet|cached|rd\+|elfhosted/i.test(text);
+    // 1. זיהוי אם המקור הוא Debrid (כולל tb, comet, elfhosted, elfcache)
+    const hasCacheKeywords = /torbox|tb\b|comet|cached|rd\+|elfhosted|elfcache/i.test(text);
     
     // 2. זיהוי חד-משמעי של טורנטים גולמיים (רק אם אין להם מילות מפתח של Debrid)
     const isTorrent = (stream.url && (stream.url.startsWith('magnet:') || stream.url.toLowerCase().endsWith('.torrent'))) || (stream.infoHash && !hasCacheKeywords);
@@ -39,7 +38,6 @@ function isCached(stream) {
     // 4. הגדרת סטרים ישיר (HTTP/HLS/Dash)
     const isDirectStream = stream.url.startsWith('http') || stream.url.startsWith('acestream');
     
-    // יחזיר true רק אם זה אכן סטרים ישיר או Debrid שמוכן לניגון מיידי
     return isDirectStream || hasCacheKeywords;
 }
 
@@ -58,7 +56,15 @@ function getSeeders(stream) {
 }
 
 function getSizeGB(stream) {
-    if (stream.size) return stream.size / (1024 ** 3);
+    // 1. עדיפות עליונה: גודל הפרק הספציפי מתוך העונה (במידה וקיים)
+    if (stream.behaviorHints && stream.behaviorHints.videoSize) {
+        return stream.behaviorHints.videoSize / (1024 ** 3);
+    }
+    // 2. עדיפות שנייה: גודל הטורנט הכולל המוצהר
+    if (stream.size) {
+        return stream.size / (1024 ** 3);
+    }
+    // 3. עדיפות אחרונה: גירוד משקל מתוך הטקסט
     const match = getTextForAnalysis(stream).match(REGEX_SIZE);
     if (!match) return 0;
     const val = parseFloat(match[1]);
@@ -74,9 +80,14 @@ function getQualityWeight(text) {
 }
 
 function getResWeight(text) {
-    if (text.includes('4k') || text.includes('2160p')) return 4;
-    if (text.includes('1080p') || text.includes('fhd')) return 3;
-    if (text.includes('720p') || text.includes('hd')) return 2;
+    // שימוש בפסילה לאחור וגבולות מילה כדי שקבוצות מפיצים עם השם 4K לא יקפיצו קבצי 1080p
+    if (/\b(1080p|fhd)\b/i.test(text)) return 3;
+    if (/\b(720p|hdrip)\b/i.test(text)) return 2;
+    if (/\b(480p|sd)\b/i.test(text)) return 1;
+    
+    // רק אם לא מצאנו רזולוציות נמוכות, נחפש 4K/2160p
+    if (/\b(4k|2160p|uhd)\b/i.test(text)) return 4;
+    
     return 1; 
 }
 
@@ -247,7 +258,7 @@ export default async function handler(req, res) {
             const isStreamUsenet = isUsenet(stream);
             const seeders = getSeeders(stream);
             
-            // סינון לפי מינימום Seeders מתוך הפרופיל
+            // סינון נוקשה לפי פרופיל, אבל מתעלם מאלה שחזרו ללא מידע (null) כדי לא לפסול אותם בטעות
             if (!isStreamCached && !isStreamUsenet && seeders !== null && seeders < profile.minSeedersUncached) return false;
             
             return true;
@@ -298,7 +309,10 @@ export default async function handler(req, res) {
                 // מתן חסינות לתכנים ללא כמות Seeders מפורשת
                 const seedA = getSeeders(a) !== null ? getSeeders(a) : profile.minSeedersUncached;
                 const seedB = getSeeders(b) !== null ? getSeeders(b) : profile.minSeedersUncached;
-                return seedB - seedA;
+                if (seedA !== seedB) return seedB - seedA;
+
+                // שובר שוויון סופי בדלי: גודל הקובץ (הכבד מנצח)
+                return getSizeGB(b) - getSizeGB(a);
             });
         }
 
@@ -345,23 +359,22 @@ export default async function handler(req, res) {
             const resA = getResWeight(textA); const resB = getResWeight(textB);
             const sizeA = getSizeGB(a); const sizeB = getSizeGB(b);
 
-            // מתן חסינות גם במיון הסופי של הסטנדרט
             const seedA = getSeeders(a) !== null ? getSeeders(a) : profile.minSeedersUncached; 
             const seedB = getSeeders(b) !== null ? getSeeders(b) : profile.minSeedersUncached;
 
             if (profileConfig === 'everything') {
                 if (resA !== resB) return resB - resA;
                 if (qA !== qB) return qB - qA;
-                if (sizeA !== sizeB) return sizeB - sizeA;
                 if (!cachedA && !cachedB && seedA !== seedB) return seedB - seedA;
-                return cachedA === cachedB ? 0 : (cachedA ? -1 : 1);
+                if (cachedA !== cachedB) return cachedA ? -1 : 1;
+                return sizeB - sizeA; // גודל קובץ כשובר שוויון אולטימטיבי
             } else {
                 if (cachedA !== cachedB) return cachedA ? -1 : 1;
                 if (usenetA !== usenetB) return usenetA ? -1 : 1;
                 if (resA !== resB) return resB - resA;
                 if (qA !== qB) return qB - qA;
-                if (sizeA !== sizeB) return sizeB - sizeA;
-                return 0;
+                if (!cachedA && !cachedB && seedA !== seedB) return seedB - seedA;
+                return sizeB - sizeA; // גודל קובץ כשובר שוויון אולטימטיבי
             }
         });
 
@@ -376,10 +389,10 @@ export default async function handler(req, res) {
             const text = getTextForAnalysis(stream);
             const isVip = isVIPSource(stream);
             const isC = isCached(stream);
-            const hasDebridTag = /rd\+?|torbox|tb\b|comet|ad\+?|pm\+?|cached|real-?debrid|premiumize/i.test(text);
+            const hasDebridTag = /rd\+?|torbox|tb\b|comet|ad\+?|pm\+?|cached|real-?debrid|premiumize|elfhosted|elfcache/i.test(text);
 
-            const REGEX_BRACKETS = /\[[^\]]*(torbox|tb|rd|ad|pm|cached|real-?debrid|all-?debrid|premiumize)[^\]]*\]/gi;
-            const REGEX_PARENS = /\([^)]*(torbox|tb|rd|ad|pm|cached|real-?debrid|all-?debrid|premiumize)[^)]*\)/gi;
+            const REGEX_BRACKETS = /\[[^\]]*(torbox|tb\b|rd|ad|pm|cached|real-?debrid|all-?debrid|premiumize|elfhosted|elfcache)[^\]]*\]/gi;
+            const REGEX_PARENS = /\([^)]*(torbox|tb\b|rd|ad|pm|cached|real-?debrid|all-?debrid|premiumize|elfhosted|elfcache)[^)]*\)/gi;
             const REGEX_DOWNLOAD = /\[[^\]]*(download|⬇️)[^\]]*\]/gi;
 
             let cleanName = (stream.name || '').replace(REGEX_BRACKETS, '').replace(REGEX_PARENS, '').replace(REGEX_DOWNLOAD, '');
