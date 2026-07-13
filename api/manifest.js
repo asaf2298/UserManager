@@ -57,7 +57,7 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.4.5",
+            version: "2.4.6", // <-- הקפצת גרסה לאיפוס מטמון שגיאות ה-Meta בסטרימיו
             name: `Esay - ${userConfig.name || userKey}`,
             description: "Esay Aggregator with Unified Search & LiveTV Israel",
             resources: ["stream", "subtitles", "catalog", "meta"],
