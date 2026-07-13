@@ -14,10 +14,15 @@ export default async function handler(req, res) {
         }
 
         const type = urlParts[metaIdx + 1];
-        const idWithExt = urlParts[metaIdx + 2];
+        
+        // תיקון הקידוד הכפול: מוודאים שאין %3A בכתובת כדי ש-node-fetch לא יהרוס את הלינק
+        let rawIdWithExt = urlParts[metaIdx + 2];
+        if (rawIdWithExt.includes('%')) {
+            rawIdWithExt = decodeURIComponent(rawIdWithExt);
+        }
+        const idWithExt = rawIdWithExt;
         const id = idWithExt.replace('.json', '');
 
-        // מעקף ל-IMDb: מחזירים 404 כדי לאלץ את סטרימיו להשתמש ב-Cinemeta!
         if (id.startsWith('tt')) {
             return res.status(404).json({ meta: null });
         }
@@ -27,8 +32,8 @@ export default async function handler(req, res) {
 
         const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
         
-        // תיקון נתיב חובה ל-Kanbox: אם type=tv, פונים ל-series
-        const forwardType = type === 'tv' ? 'series' : type;
+        // ניתוב חובה ל-Kanbox: גם tv וגם channel חייבים לעבור כ-series
+        const forwardType = (type === 'tv' || type === 'channel') ? 'series' : type;
         const targetUrl = `${cleanTvUrl}/meta/${forwardType}/${idWithExt}`;
 
         const headers = {
@@ -47,6 +52,7 @@ export default async function handler(req, res) {
         return res.status(404).json({ meta: null });
 
     } catch (error) {
+        // תיקון הלוגים הריקים: הדפסת כל אובייקט השגיאה
         console.error('Meta Proxy Error:', error);
         return res.status(404).json({ meta: null });
     }
