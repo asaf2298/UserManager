@@ -18,6 +18,9 @@ function getTextForAnalysis(stream) {
     return ((stream.name || '') + ' ' + (stream.title || '') + ' ' + (stream.description || '')).toLowerCase();
 }
 function isCached(stream) {
+    // הגנה: אם אין URL ישיר, זה טורנט רגיל (Uncached) ולא קובץ קאש, גם אם הטקסט מכיל תגיות של ספקים
+    if (!stream.url) return false; 
+    
     const text = getTextForAnalysis(stream);
     const isDirectStream = stream.url && (stream.url.startsWith('http') || stream.url.startsWith('acestream'));
     return text.includes('torbox+') || text.includes('cached') || text.includes('rd+') || isDirectStream;
@@ -88,14 +91,12 @@ export default async function handler(req, res) {
                 const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
                 const targetUrl = `${cleanTvUrl}/stream/${type}/${idWithExt}`;
                 
-                // תיקון 2: הזרקת Headers כדי למנוע חסימה של הערוצים החיים מ-Kanbox כבוטים
                 const headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Accept': 'application/json, text/plain, */*',
                     'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8'
                 };
                 
-                // הוספת timeout קשיח גם כאן ליתר ביטחון
                 const tvRes = await fetch(targetUrl, { headers, timeout: 9500 });
                 if (tvRes.ok) {
                     const tvData = await tvRes.json();
@@ -131,7 +132,6 @@ export default async function handler(req, res) {
             const startTime = performance.now();
 
             try {
-                // תיקון 4: הוספת timeout ברמת node-fetch כדי למנוע תקיעות של דקות ארוכות (הלוג ההזוי)
                 const response = await fetch(targetUrl, { 
                     signal: controller.signal, 
                     headers,
@@ -170,7 +170,6 @@ export default async function handler(req, res) {
         let promises = addons.map(url => fetchFromAddon(url));
 
         if (id.startsWith('tt')) {
-            // תיקון 1: גילוח נקודתיים בסדרות כדי שסינמטה תוכל להחזיר שם בעברית עבור Kanbox
             const baseId = id.split(':')[0]; 
             const movieName = await getMetaName(type, baseId);
             
@@ -212,7 +211,6 @@ export default async function handler(req, res) {
             ]);
         }
 
-        // תיקון 3: לולאת כפילויות חכמה שמחזירה את ה-Uncached ומאות הלינקים של Comet!
         let filteredStreams = [];
         for (const stream of allStreams) {
             const sIsCached = isCached(stream);
@@ -221,16 +219,13 @@ export default async function handler(req, res) {
             const isDuplicate = filteredStreams.some(existing => {
                 const eIsCached = isCached(existing);
                 
-                // קובץ Uncached וקובץ Cached לעולם לא ימחקו אחד את השני
                 if (sIsCached !== eIsCached) return false; 
                 
                 if (sIsCached) {
-                    // שני קבצי קאש: נבדוק כפילות לפי URL בלבד (כתובת הורדה ישירה)
                     if (stream.url && existing.url) {
                         return stream.url === existing.url;
                     }
                 } else {
-                    // שני קבצי טורנט: נבדוק Hash + Title + Size עד הפרש 1MB
                     if (stream.infoHash && existing.infoHash && stream.infoHash === existing.infoHash) {
                         if (stream.title === existing.title) {
                             const eSize = getSizeGB(existing);
@@ -249,7 +244,6 @@ export default async function handler(req, res) {
             }
         }
 
-        // --- מכאן והלאה: הסינון, המיון, החיתוך ועיצוב השמות שלך - נשארו ללא שינוי! ---
         filteredStreams = filteredStreams.filter(stream => {
             const isStreamCached = isCached(stream);
             const isStreamUsenet = isUsenet(stream);
