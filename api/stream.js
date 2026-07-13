@@ -89,6 +89,10 @@ export default async function handler(req, res) {
 
     console.log(`[ESAY DIAGNOSTIC - STREAM] 🟢 בקשת סטרים נכנסת: ${req.url}`);
 
+    // חילוץ מדויק של Headers לפי המפרט כדי לשמור על IP ומזהה של סטרימיו
+    const clientIp = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '';
+    const clientUA = req.headers['user-agent'] || 'Stremio/4.4.156';
+
     try {
         const urlParts = req.url.split('?')[0].split('/');
         const streamIdx = urlParts.indexOf('stream');
@@ -107,7 +111,7 @@ export default async function handler(req, res) {
         const id = idWithExt.replace('.json', '');
 
         // ==========================================
-        // ערוצי טלוויזיה / לייב (כולל הדפסת ה-JSON המלא)
+        // ערוצי טלוויזיה / לייב 
         // ==========================================
         if (type === 'tv' || type === 'channel') {
             const tvAddonUrl = process.env.TV_ADDON_URL;
@@ -119,15 +123,22 @@ export default async function handler(req, res) {
                 const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
                 const targetUrl = `${cleanTvUrl}/stream/series/${idWithExt}`;
                 
-                console.log(`[ESAY DIAGNOSTIC - LIVE] 🚀 מוציא בקשה ל-Kanbox: ${targetUrl}`);
-                const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' };
+                // הזרקת ה-Headers המקוריים לפי הנחיות ה-Kanbox!
+                const headers = { 
+                    'User-Agent': clientUA,
+                    'X-Forwarded-For': clientIp,
+                    'Accept': 'application/json, text/plain, */*',
+                    'Accept-Encoding': 'gzip'
+                };
+                
+                console.log(`[ESAY DIAGNOSTIC - LIVE] 🚀 מוציא בקשה ל-Kanbox: ${targetUrl}. Headers:`, headers);
                 const tvRes = await fetch(targetUrl, { headers, timeout: 9500 });
                 
                 console.log(`[ESAY DIAGNOSTIC - LIVE] 📥 סטטוס תגובה מ-Kanbox: ${tvRes.status}`);
                 if (tvRes.ok) {
                     const tvData = await tvRes.json();
                     const streamsCount = (tvData && Array.isArray(tvData.streams)) ? tvData.streams.length : 0;
-                    console.log(`[ESAY DIAGNOSTIC - LIVE] ✅ נמצאו ${streamsCount} קישורים. תוכן אובייקט הסטרים המלא: ${JSON.stringify(tvData)}`);
+                    console.log(`[ESAY DIAGNOSTIC - LIVE] ✅ נמצאו ${streamsCount} קישורים. תוכן אובייקט:`, JSON.stringify(tvData));
                     return res.status(200).json(tvData);
                 }
             } catch (e) {
@@ -154,8 +165,14 @@ export default async function handler(req, res) {
             }
             const targetUrl = `${cleanBaseUrl}/stream/${forwardType}/${finalIdWithExt}`;
 
+            // העברת ה-Headers גם לשאר הספקים (פרקטיקה מומלצת לפרוקסי)
+            const fetchHeaders = { 
+                'User-Agent': clientUA,
+                'X-Forwarded-For': clientIp 
+            };
+
             try {
-                const response = await fetch(targetUrl, { signal: controller.signal, headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: profile.timeoutMs });
+                const response = await fetch(targetUrl, { signal: controller.signal, headers: fetchHeaders, timeout: profile.timeoutMs });
                 if (!response.ok) return [];
                 const data = await response.json();
                 if (data && Array.isArray(data.streams)) {
@@ -176,7 +193,7 @@ export default async function handler(req, res) {
             const baseId = id.split(':')[0]; 
             const movieName = await getMetaName(type, baseId); 
             if (movieName) {
-                console.log(`[ESAY DIAGNOSTIC - SEARCH] 🔍 נמצא שם באנגלית (Cinemeta): "${movieName}". מזריק לתוספים כמנגנון Fallback...`);
+                console.log(`[ESAY DIAGNOSTIC - SEARCH] 🔍 נמצא שם באנגלית (Cinemeta): "${movieName}". מזריק לתוספים...`);
                 const textSearchPromises = addons.map(baseUrl => fetchFromAddon(baseUrl, `search=${encodeURIComponent(movieName)}.json`));
                 promises = promises.concat(textSearchPromises);
             }
@@ -236,8 +253,6 @@ export default async function handler(req, res) {
                 standardStreams.push(stream);
             }
         }
-
-        console.log(`[ESAY DIAGNOSTIC - BUCKETS] מתחיל פיזור וזיהוי של ${standardStreams.length} סטרים (לא כולל VIP)...`);
         
         const buckets = {
             '4k_c': [], '4k_u': [],
@@ -335,8 +350,10 @@ export default async function handler(req, res) {
             }
         });
 
+        // ==========================================
+        // שילוב ה-VIP בראש הרשימה
+        // ==========================================
         let finalSliced = [...vipStreams, ...standardResult];
-        console.log(`[ESAY DIAGNOSTIC - MERGE] סה"כ רשימה: ${vipStreams.length} VIP (הודבקו בראש) + ${standardResult.length} סטנדרט. סה"כ: ${finalSliced.length}`);
 
         finalSliced = finalSliced.map(stream => {
             const text = getTextForAnalysis(stream);
