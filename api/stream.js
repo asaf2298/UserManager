@@ -12,17 +12,19 @@ const REGEX_HDR_FALLBACK = /(fallback|hdr10\+?(\s|-)compatible|hybrid)/i;
 const REGEX_HD_AUDIO = /(dts(-hd|:x|x|ma)?|truehd|atmos)/i;
 const REGEX_SIZE = /(\d+(?:\.\d+)?)\s*(GB|MB)/i;
 const REGEX_SEEDERS = /(?:👤|seeders?:?)\s*(\d+)/i;
-const REGEX_CACHED_TAGS = /\[?(torbox\+|rd\+|ad\+|pm\+|cached|real-?debrid|all-?debrid|premiumize)\]?/gi;
 
 function getTextForAnalysis(stream) {
     return ((stream.name || '') + ' ' + (stream.title || '') + ' ' + (stream.description || '')).toLowerCase();
 }
+
 function isCached(stream) {
-    if (!stream.url) return false; 
+    if (stream.infoHash) return false; // טורנטים תמיד יסומנו כ-Uncached
+    if (!stream.url) return false;
     const text = getTextForAnalysis(stream);
-    const isDirectStream = stream.url.startsWith('http') || stream.url.startsWith('acestream');
-    return text.includes('torbox+') || text.includes('cached') || text.includes('rd+') || isDirectStream;
+    if (text.includes('download')) return false; // לינקים של Torrentio/Meteor מסוג Uncached
+    return true; // זהו לינק ישיר להפעלה (Debrid או Kanbox)
 }
+
 function isUsenet(stream) {
     return getTextForAnalysis(stream).includes('usenet') || getTextForAnalysis(stream).includes('nzb');
 }
@@ -56,7 +58,6 @@ function getResWeight(text) {
     return 1;
 }
 
-// הגבלת זמן ל-Cinemeta כדי שלא תקרוס לוגיקת האגרגציה
 async function getMetaName(type, id) {
     try {
         const controller = new AbortController();
@@ -86,16 +87,22 @@ export default async function handler(req, res) {
 
         const userKey = urlParts[streamIdx - 1];
         const type = urlParts[streamIdx + 1];
-        const idWithExt = urlParts[streamIdx + 2];
+        
+        // תיקון הקידוד הכפול לסדרות
+        let rawIdWithExt = urlParts[streamIdx + 2];
+        if (rawIdWithExt.includes('%')) {
+            rawIdWithExt = decodeURIComponent(rawIdWithExt);
+        }
+        const idWithExt = rawIdWithExt;
         const id = idWithExt.replace('.json', '');
 
-        // חסימת Live TV משאר הספקים
         if (type === 'tv' || type === 'channel') {
             const tvAddonUrl = process.env.TV_ADDON_URL;
             if (!tvAddonUrl) return res.status(200).json({ streams: [] });
             try {
                 const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-                const targetUrl = `${cleanTvUrl}/stream/${type}/${idWithExt}`;
+                const forwardType = 'series'; 
+                const targetUrl = `${cleanTvUrl}/stream/${forwardType}/${idWithExt}`;
                 const headers = {
                     'User-Agent': 'Mozilla/5.0',
                     'Accept': 'application/json, text/plain, */*'
@@ -106,7 +113,7 @@ export default async function handler(req, res) {
                     return res.status(200).json(tvData);
                 }
             } catch (e) {
-                console.error('TV Stream Error:', e.message);
+                console.error('TV Stream Error:', e);
             }
             return res.status(200).json({ streams: [] });
         }
@@ -122,7 +129,13 @@ export default async function handler(req, res) {
             const timeoutId = setTimeout(() => controller.abort(), profile.timeoutMs); 
             const cleanBaseUrl = baseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
             const finalIdWithExt = customIdWithExt || idWithExt;
-            const targetUrl = `${cleanBaseUrl}/stream/${type}/${finalIdWithExt}`;
+            
+            // המרת tv/channel ל-series עבור Kanbox גם בסטרימים הרגילים
+            let forwardType = type;
+            if (baseUrl.includes('kan-box-addon.vercel.app') && (type === 'tv' || type === 'channel')) {
+                forwardType = 'series';
+            }
+            const targetUrl = `${cleanBaseUrl}/stream/${forwardType}/${finalIdWithExt}`;
             
             const headers = { 'User-Agent': 'Mozilla/5.0' };
             const startTime = performance.now();
@@ -138,6 +151,8 @@ export default async function handler(req, res) {
                 }
                 return [];
             } catch (err) {
+                const durationMs = (performance.now() - startTime).toFixed(0);
+                console.error(`[Esay Timer] ❌ ${baseUrl.substring(0, 45)}... FAILED after ${durationMs}ms. Error:`, err);
                 return [];
             } finally {
                 clearTimeout(timeoutId);
@@ -283,10 +298,18 @@ export default async function handler(req, res) {
         }
 
         finalSliced = finalSliced.map(stream => {
-            if (isCached(stream)) {
-                let cleanName = (stream.name || '').replace(REGEX_CACHED_TAGS, '').trim();
-                let cleanTitle = (stream.title || '').replace(REGEX_CACHED_TAGS, '').trim();
-                cleanName = cleanName.replace(/^[\s|\-\n]+/, '').replace(/[\s|\-\n]+$/, '').trim();
+            const text = getTextForAnalysis(stream);
+            const hasDebridTag = /rd\+?|torbox\+?|tb\+?|ad\+?|pm\+?|cached|real-?debrid|premiumize/i.test(text);
+
+            // מצמידים "זמין לצפייה" *אך ורק* אם זה שירות Debrid ודאי, ולא נוגעים בשמות של Kanbox
+            if (hasDebridTag && !isVIPSource(stream)) {
+                const REGEX_CACHED = /\[?(torbox\+?|tb\+?|rd\+?|ad\+?|pm\+?|cached|real-?debrid|all-?debrid|premiumize)\]?/gi;
+                let cleanName = (stream.name || '').replace(REGEX_CACHED, '').trim();
+                let cleanTitle = (stream.title || '').replace(REGEX_CACHED, '').trim();
+                
+                // ניקוי סוגריים וקווים שנשארו בקצוות (הסיבה שהופיע לך TB] בתמונה)
+                cleanName = cleanName.replace(/^[\]|\]\s\-\n]+/, '').replace(/[\[|\[\s\-\n]+$/, '').trim();
+                
                 stream.name = cleanName ? `זמין לצפייה | ${cleanName}` : 'זמין לצפייה';
                 stream.title = cleanTitle;
             }
