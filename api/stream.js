@@ -22,7 +22,6 @@ function isCached(stream) {
     if (!stream.url) return false;
     
     const text = getTextForAnalysis(stream);
-    // סינון מילים וסימנים המצביעים על טורנט לא מקושגא בספקים מרוחקים
     if (text.includes('download') || text.includes('⬇️')) return false;
     
     const isDirectStream = stream.url.startsWith('http') || stream.url.startsWith('acestream');
@@ -65,7 +64,7 @@ function getResWeight(text) {
     if (text.includes('4k') || text.includes('2160p')) return 4;
     if (text.includes('1080p') || text.includes('fhd')) return 3;
     if (text.includes('720p') || text.includes('hd')) return 2;
-    return 1; // SD / Other
+    return 1; 
 }
 
 async function getMetaName(type, id) {
@@ -108,24 +107,31 @@ export default async function handler(req, res) {
         const id = idWithExt.replace('.json', '');
 
         // ==========================================
-        // ערוצי טלוויזיה / לייב
+        // ערוצי טלוויזיה / לייב (כולל לוגים מלאים)
         // ==========================================
         if (type === 'tv' || type === 'channel') {
             const tvAddonUrl = process.env.TV_ADDON_URL;
+            console.log(`[ESAY DIAGNOSTIC - LIVE] ערוץ חי זוהה: ${idWithExt}. כתובת בסיס מהסביבה: ${tvAddonUrl}`);
+            
             if (!tvAddonUrl) return res.status(200).json({ streams: [] });
             
             try {
                 const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
                 const targetUrl = `${cleanTvUrl}/stream/series/${idWithExt}`;
                 
+                console.log(`[ESAY DIAGNOSTIC - LIVE] 🚀 מוציא בקשה ל-Kanbox: ${targetUrl}`);
                 const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' };
                 const tvRes = await fetch(targetUrl, { headers, timeout: 9500 });
+                
+                console.log(`[ESAY DIAGNOSTIC - LIVE] 📥 סטטוס תגובה מ-Kanbox: ${tvRes.status}`);
                 if (tvRes.ok) {
                     const tvData = await tvRes.json();
+                    const streamsCount = tvData.streams ? tvData.streams.length : 0;
+                    console.log(`[ESAY DIAGNOSTIC - LIVE] ✅ נמצאו ${streamsCount} קישורים. מחזיר לסטרימיו.`);
                     return res.status(200).json(tvData);
                 }
             } catch (e) {
-                console.error('TV Stream Error:', e);
+                console.error('[ESAY DIAGNOSTIC - LIVE] 💥 שגיאה בערוץ חי:', e);
             }
             return res.status(200).json({ streams: [] });
         }
@@ -136,7 +142,6 @@ export default async function handler(req, res) {
         const addons = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
         if (addons.length === 0) return res.status(200).json({ streams: [] });
         
-        // פונקציית שליפה
         const fetchFromAddon = async (baseUrl, customIdWithExt = null) => {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), profile.timeoutMs); 
@@ -167,11 +172,12 @@ export default async function handler(req, res) {
 
         let promises = addons.map(url => fetchFromAddon(url));
 
-        // תרגום וחיפוש עברית ל-Kanbox
+        // תרגום וחיפוש טקסט (אנגלית)
         if (id.startsWith('tt')) {
             const baseId = id.split(':')[0]; 
-            const movieName = await getMetaName(type, baseId);
+            const movieName = await getMetaName(type, baseId); // מושך את השם הבינלאומי (באנגלית)
             if (movieName) {
+                console.log(`[ESAY DIAGNOSTIC - SEARCH] 🔍 נמצא שם באנגלית (Cinemeta): "${movieName}". מזריק לתוספים כמנגנון Fallback...`);
                 const textSearchPromises = addons.map(baseUrl => fetchFromAddon(baseUrl, `search=${encodeURIComponent(movieName)}.json`));
                 promises = promises.concat(textSearchPromises);
             }
@@ -185,7 +191,6 @@ export default async function handler(req, res) {
 
         await Promise.race([Promise.allSettled(trackPromises), new Promise(resolve => setTimeout(resolve, 5000))]);
 
-        // סינון כפילויות מוחלט
         let filteredStreams = [];
         for (const stream of allStreams) {
             const sIsCached = isCached(stream);
@@ -210,7 +215,6 @@ export default async function handler(req, res) {
             if (!isDuplicate) filteredStreams.push(stream);
         }
 
-        // סינון גודל וסידרים
         filteredStreams = filteredStreams.filter(stream => {
             const sizeGB = getSizeGB(stream);
             if (sizeGB > profile.maxSizeGB) return false;
@@ -223,9 +227,6 @@ export default async function handler(req, res) {
             return true;
         });
 
-        // ==========================================
-        // חלוקת ה-VIP (מוחרגים לחלוטין מתהליך ה-Buckets)
-        // ==========================================
         const vipStreams = [];
         const standardStreams = [];
         
@@ -237,9 +238,8 @@ export default async function handler(req, res) {
             }
         }
 
-        // ==========================================
-        // מערכת הדליים (Buckets) ומכסות חכמות
-        // ==========================================
+        console.log(`[ESAY DIAGNOSTIC - BUCKETS] מתחיל פיזור וזיהוי של ${standardStreams.length} סטרים (לא כולל VIP)...`);
+        
         const buckets = {
             '4k_c': [], '4k_u': [],
             '1080p_c': [], '1080p_u': [],
@@ -247,9 +247,18 @@ export default async function handler(req, res) {
             'sd_c': [], 'sd_u': []
         };
 
-        // פיזור לדליים
         for (const s of standardStreams) {
             const isC = isCached(s);
+            const isU = isUsenet(s);
+            const titleLog = (s.title || s.name || '').substring(0, 40).replace(/\n/g, ' ');
+
+            // לוגים ייעודיים לאיתור Uncached ו-Usenet
+            if (isU) {
+                console.log(`[ESAY DIAGNOSTIC - IDENTIFY] 🗄️ זוהה Usenet: ${titleLog}`);
+            } else if (!isC) {
+                console.log(`[ESAY DIAGNOSTIC - IDENTIFY] ⏳ זוהה Uncached: ${titleLog}`);
+            }
+
             const res = getResWeight(getTextForAnalysis(s));
             if (res === 4) { isC ? buckets['4k_c'].push(s) : buckets['4k_u'].push(s); }
             else if (res === 3) { isC ? buckets['1080p_c'].push(s) : buckets['1080p_u'].push(s); }
@@ -257,7 +266,6 @@ export default async function handler(req, res) {
             else { isC ? buckets['sd_c'].push(s) : buckets['sd_u'].push(s); }
         }
 
-        // מיון פנימי בתוך כל דלי (קודם כל איכות Remux וכו', ואז סידרים)
         for (const key in buckets) {
             buckets[key].sort((a, b) => {
                 const qA = getQualityWeight(getTextForAnalysis(a));
@@ -269,7 +277,6 @@ export default async function handler(req, res) {
             });
         }
 
-        // הגדרת מכסות (Quotas)
         const isBigProfile = (profileConfig === 'everything' || profileConfig === 'friends_heavy');
         let quotas = {};
         if (isBigProfile) {
@@ -280,26 +287,23 @@ export default async function handler(req, res) {
 
         const standardResult = [];
 
-        // פונקציית משיכה וגלישה (Overflow)
         function drawWithOverflow(resLevel, qC, qU) {
             let targetC = qC;
             let pulledC = buckets[`${resLevel}_c`].splice(0, targetC);
             standardResult.push(...pulledC);
             let missingC = targetC - pulledC.length;
 
-            let targetU = qU + missingC; // העברת חוסר מ-Cached ל-Uncached של אותה רזולוציה
+            let targetU = qU + missingC; 
             let pulledU = buckets[`${resLevel}_u`].splice(0, targetU);
             standardResult.push(...pulledU);
             let missingU = targetU - pulledU.length;
 
-            // אם עדיין חסר Uncached, ננסה לשאוב שוב ממה שנשאר ב-Cached באותה רזולוציה
             if (missingU > 0 && buckets[`${resLevel}_c`].length > 0) {
                 let extraC = buckets[`${resLevel}_c`].splice(0, missingU);
                 standardResult.push(...extraC);
                 missingU -= extraC.length;
             }
-            
-            return missingU; // מחזיר את מה שחסר כדי לגלוש לרזולוציה נמוכה יותר
+            return missingU; 
         }
 
         let cascade = 0;
@@ -308,11 +312,6 @@ export default async function handler(req, res) {
         cascade = drawWithOverflow('720p', quotas['720p_c'] + cascade, quotas['720p_u']);
         cascade = drawWithOverflow('sd', quotas['sd_c'] + cascade, quotas['sd_u']);
 
-        console.log(`[ESAY DIAGNOSTIC - BUCKETS] נשאבו ${standardResult.length} סטרים מהמכסות.`);
-
-        // ==========================================
-        // מיון סופי לפרופילים (לפני חיבור ה-VIP)
-        // ==========================================
         standardResult.sort((a, b) => {
             const textA = getTextForAnalysis(a); const textB = getTextForAnalysis(b);
             const cachedA = isCached(a); const cachedB = isCached(b);
@@ -328,9 +327,7 @@ export default async function handler(req, res) {
                 const seedA = getSeeders(a) || 0; const seedB = getSeeders(b) || 0;
                 if (!cachedA && !cachedB && seedA !== seedB) return seedB - seedA;
                 return cachedA === cachedB ? 0 : (cachedA ? -1 : 1);
-            }
-            // Friends Heavy / Light / Family (תעדוף לקאש)
-            else {
+            } else {
                 if (cachedA !== cachedB) return cachedA ? -1 : 1;
                 if (usenetA !== usenetB) return usenetA ? -1 : 1;
                 if (resA !== resB) return resB - resA;
@@ -341,15 +338,12 @@ export default async function handler(req, res) {
         });
 
         // ==========================================
-        // שילוב ה-VIP בסוף הרשימה להרחבה מעבר ל-30/10
+        // שילוב ה-VIP בראש הרשימה
         // ==========================================
-        let finalSliced = [...standardResult, ...vipStreams];
-        console.log(`[ESAY DIAGNOSTIC - MERGE] סה"כ רשימה: ${standardResult.length} סטנדרט + ${vipStreams.length} VIP (הודבקו בסוף). סה"כ: ${finalSliced.length}`);
+        let finalSliced = [...vipStreams, ...standardResult];
+        console.log(`[ESAY DIAGNOSTIC - MERGE] סה"כ רשימה: ${vipStreams.length} VIP (הודבקו בראש) + ${standardResult.length} סטנדרט. סה"כ: ${finalSliced.length}`);
 
-        // ==========================================
-        // הזרקת תגיות שמות (כולל Uncached חדש)
-        // ==========================================
-        finalSliced = finalSliced.map((stream, index) => {
+        finalSliced = finalSliced.map(stream => {
             const text = getTextForAnalysis(stream);
             const isVip = isVIPSource(stream);
             const isC = isCached(stream);
