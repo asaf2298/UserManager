@@ -80,6 +80,7 @@ export default async function handler(req, res) {
         const userKey = urlParts[streamIdx - 1];
         const type = urlParts[streamIdx + 1];
         const idWithExt = urlParts[streamIdx + 2];
+        const id = idWithExt.replace('.json', ''); // הגדרת מזהה נקי ללא סיומת לקראת הבדיקות
 
         if (type === 'tv' || type === 'channel') {
             const tvAddonUrl = process.env.TV_ADDON_URL;
@@ -105,13 +106,14 @@ export default async function handler(req, res) {
         const addons = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
         if (addons.length === 0) return res.status(200).json({ streams: [] });
         
-        const fetchFromAddon = async (baseUrl) => {
+        // הוספנו תמיכה ב-customIdWithExt כדי לאפשר שליחת שאילתות חיפוש טקסטואליות בצורה תקינה
+        const fetchFromAddon = async (baseUrl, customIdWithExt = null) => {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), profile.timeoutMs); 
 
-            // הסרת המילה manifest.json מהקישור הבסיסי (במידה והוזנה) לפני הרכבת הנתיב
             const cleanBaseUrl = baseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-            const targetUrl = `${cleanBaseUrl}/stream/${type}/${idWithExt}`;
+            const finalIdWithExt = customIdWithExt || idWithExt;
+            const targetUrl = `${cleanBaseUrl}/stream/${type}/${finalIdWithExt}`;
             
             const headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -119,20 +121,20 @@ export default async function handler(req, res) {
                 'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8'
             };
 
-        const startTime = performance.now();
+            const startTime = performance.now();
 
             try {
                 const response = await fetch(targetUrl, { signal: controller.signal, headers });
                 const durationMs = (performance.now() - startTime).toFixed(0);
                 
                 if (!response.ok) {
-                    console.error(`[Vecret Timer] ❌ ${baseUrl.substring(0, 45)}... returned status ${response.status} after ${durationMs}ms`);
+                    console.error(`[Esay Timer] ❌ ${baseUrl.substring(0, 45)}... returned status ${response.status} after ${durationMs}ms`);
                     return [];
                 }
                 
                 const data = await response.json();
                 const streamCount = (data && Array.isArray(data.streams)) ? data.streams.length : 0;
-                console.log(`[Vecret Timer] ⏱️  ${baseUrl.substring(0, 45)}... responded in ${durationMs}ms (Found ${streamCount} streams)`);
+                console.log(`[Esay Timer] ⏱️  ${baseUrl.substring(0, 45)}... responded in ${durationMs}ms (Found ${streamCount} streams)`);
 
                 if (data && Array.isArray(data.streams)) {
                     data.streams.forEach(s => s._sourceBaseUrl = baseUrl);
@@ -142,9 +144,9 @@ export default async function handler(req, res) {
             } catch (err) {
                 const durationMs = (performance.now() - startTime).toFixed(0);
                 if (err.name === 'AbortError') {
-                    console.warn(`[Vecret Timer] ⏱️  ${baseUrl.substring(0, 45)}... TIMEOUT hit after ${durationMs}ms!`);
+                    console.warn(`[Esay Timer] ⏱️  ${baseUrl.substring(0, 45)}... TIMEOUT hit after ${durationMs}ms!`);
                 } else {
-                    console.error(`[Vecret Timer] ❌ ${baseUrl.substring(0, 45)}... FAILED after ${durationMs}ms. Error: ${err.message}`);
+                    console.error(`[Esay Timer] ❌ ${baseUrl.substring(0, 45)}... FAILED after ${durationMs}ms. Error: ${err.message}`);
                 }
                 return [];
             } finally {
@@ -152,60 +154,53 @@ export default async function handler(req, res) {
             }
         };
 
-                let promises = addons.map(url => fetchFromAddon(url));
+        let promises = addons.map(url => fetchFromAddon(url));
 
         // --- מנגנון תרגום IMDB לשם לחיפוש בספקי HTTP ---
         if (id.startsWith('tt')) {
             const movieName = await getMetaName(type, id);
             if (movieName) {
-                console.log(`[Vecret Search] Translating ${id} to "${movieName}" for HTTP providers...`);
+                console.log(`[Esay Search] Translating ${id} to "${movieName}" for HTTP providers...`);
                 
-                // יוצרים בקשות חיפוש טקסטואליות לכל הלינקים שמתחילים ב-http
-                // אנחנו מריצים אותן במקביל לסטרימים הרגילים
+                // יוצרים בקשות חיפוש טקסטואליות ומעבירים אותן כארגומנט שני לפונקציית השליפה
                 const textSearchPromises = addons.map(baseUrl => {
-                    // הופכים את הבקשה לחיפוש טקסטואלי (פרוטוקול חיפוש סטנדרטי בסטרימיו)
-                    const cleanBaseUrl = baseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-                    const searchUrl = `${cleanBaseUrl}/stream/${type}/search=${encodeURIComponent(movieName)}.json`;
-                    
-                    return fetchFromAddon(searchUrl); // משתמשים באותה פונקציה שכבר כתבת
+                    const searchParam = `search=${encodeURIComponent(movieName)}.json`;
+                    return fetchFromAddon(baseUrl, searchParam);
                 });
                 
                 promises = promises.concat(textSearchPromises);
             }
         }
-        // --- מערכת ניהול זמנים דינמית חכמה (מותאמת למגבלת Vercel) ---
+        
+        // --- מערכת ניהול זמנים דינמית חכמה ---
         let allStreams = [];
         let pendingCount = promises.length;
 
-        // רצים על ההבטחות ויוצרים מנגנון מעקב בזמן אמת
         const trackPromises = promises.map(p => {
             return p.then(val => {
                 if (Array.isArray(val)) {
                     allStreams = allStreams.concat(val);
                 }
-                pendingCount--; // מסמנים שהתוסף סיים
+                pendingCount--;
                 return val;
             }).catch(e => {
                 pendingCount--;
             });
         });
 
-        // שלב 1: מחכים עד שכולם יסיימו, או מקסימום 5 שניות
         await Promise.race([
             Promise.allSettled(trackPromises),
             new Promise(resolve => setTimeout(resolve, 5000))
         ]);
 
-        // שלב 2: אם עברו 5 שניות, יש עדיין תוספים שרצים, ויש לנו פחות מ-3 תוצאות - נמתין עוד 4 שניות גג (סה"כ 9 שניות)
         if (pendingCount > 0 && allStreams.length < 3) {
-            console.log(`[Vecret Timer] ⚠️ Only ${allStreams.length} streams found. Waiting up to 4 more seconds for slower addons (Usenet/Yuki)...`);
+            console.log(`[Esay Timer] ⚠️ Only ${allStreams.length} streams found. Waiting up to 4 more seconds for slower addons (Usenet/Yuki)...`);
             await Promise.race([
                 Promise.allSettled(trackPromises),
                 new Promise(resolve => setTimeout(resolve, 4000))
             ]);
         }
 
-        // מעבירים את כל הסטרים שנאספו להמשך המיון והסינון בקוד
         let filteredStreams = allStreams;
         
         const uniqueStreamsMap = new Map();
@@ -226,10 +221,8 @@ export default async function handler(req, res) {
 
             if (sizeGB > profile.maxSizeGB) return false;
             
-            // מחמיר פחות: זורק רק אם יש לנו מידע וזה אכן 0
             if (!isStreamCached && !isStreamUsenet && seeders !== null && seeders === 0) return false;
             
-            // לשאר הפרופילים, דורשים מינימום סידרים רק אם יש מידע (לא null)
             if (profileConfig !== 'everything') {
                 if (!isStreamCached && !isStreamUsenet && seeders !== null && seeders < profile.minSeedersUncached) return false;
             }
@@ -270,7 +263,6 @@ export default async function handler(req, res) {
                 if (resA !== resB) return resB - resA;
                 if (sizeA !== sizeB) return sizeB - sizeA;
                 
-                // התיקון כאן: הגדרת המשתנים שחסרו
                 const seedA = getSeeders(a) || 0;
                 const seedB = getSeeders(b) || 0;
                 if (!cachedA && !cachedB && seedA !== seedB) return seedB - seedA;
@@ -292,13 +284,9 @@ export default async function handler(req, res) {
             return resB - resA;
         });
 
-        // --- לוגיקת שריון מקומות ---
-        // מפצלים את התוצאות המסודרות לכאלו שבקאש וכאלו שלא
-        // --- לוגיקת חיתוך ושריון מקומות לפי פרופיל ---
         let finalSliced = [];
 
         if (profileConfig === 'friends_heavy') {
-            // עבור חברים כבדים: שריון של 2 מקומות לפחות לטורנטים רגילים (Uncached) בסוף
             const cachedList = [];
             const uncachedList = [];
             
@@ -316,11 +304,9 @@ export default async function handler(req, res) {
             
             finalSliced = [...cachedList.slice(0, cachedSlots), ...actualUncached];
         } else {
-            // עבור everything (ו-light): פשוט לוקחים את התוצאות הכי טובות מהטופ
             finalSliced = filteredStreams.slice(0, profile.maxResults);
         }
 
-        // --- עיצוב התגיות ומחיקת שרידי לינקים פנימיים ---
         finalSliced = finalSliced.map(stream => {
             if (isCached(stream)) {
                 let cleanName = (stream.name || '').replace(REGEX_CACHED_TAGS, '').trim();
