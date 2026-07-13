@@ -14,7 +14,7 @@ export default async function handler(req, res) {
         let aioCatalogs = [];           // כל הקטלוגים מ-AIO
         let restKanboxCatalogs = [];    // שאר הקטלוגים מהספק הישראלי (VOD)
 
-        // 1. טיפול בספק המקומי בבטחה
+        // 1. טיפול בספק המקומי (Kanbox) בבטחה
         const tvAddonUrl = process.env.TV_ADDON_URL;
         if (tvAddonUrl) {
             try {
@@ -82,10 +82,13 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.4.0", // הקפצת גרסה חיונית בגלל שינוי ה-ID והשמות
+            version: "2.4.2", // הקפצת גרסה כדי לאלץ את סטרימיו למחוק מטמון ולשכוח מה-Meta
             name: `Esay - ${userConfig.name || userKey}`,
             description: "Esay Aggregator with Unified Search & Israeli HTTP support",
-            resources: ["stream", "subtitles", "catalog"],
+            
+            // שימו לב: המילה "meta" הוסרה לחלוטין מכאן!
+            resources: ["stream", "subtitles", "catalog"], 
+            
             types: ["movie", "series", "anime", "tv", "channel"],
             catalogs: finalCatalogs
         });
