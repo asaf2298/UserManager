@@ -10,29 +10,32 @@ export default async function handler(req, res) {
         const urlParts = req.url.split('?')[0].split('/');
         const metaIdx = urlParts.indexOf('meta');
         if (metaIdx < 0 || metaIdx + 2 >= urlParts.length) {
-            return res.status(400).json({ meta: {} });
+            return res.status(404).json({ meta: null });
         }
 
         const type = urlParts[metaIdx + 1];
         const idWithExt = urlParts[metaIdx + 2];
         const id = idWithExt.replace('.json', '');
 
-        // אם זה מזהה IMDb רגיל, אל תתערב - תן לסינמטה הרשמית של סטרימיו לטפל בזה
+        // מעקף ל-IMDb: מחזירים 404 כדי לאלץ את סטרימיו להשתמש ב-Cinemeta!
         if (id.startsWith('tt')) {
-            return res.status(200).json({ meta: {} });
+            return res.status(404).json({ meta: null });
         }
 
-        // אם זה מזהה פנימי (של Kanbox), נעביר את הבקשה ישירות לתוסף שלך
         const tvAddonUrl = process.env.TV_ADDON_URL;
-        if (!tvAddonUrl) return res.status(200).json({ meta: {} });
+        if (!tvAddonUrl) return res.status(404).json({ meta: null });
 
         const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-        const targetUrl = `${cleanTvUrl}/meta/${type}/${idWithExt}`;
+        
+        // תיקון נתיב חובה ל-Kanbox: אם type=tv, פונים ל-series
+        const forwardType = type === 'tv' ? 'series' : type;
+        const targetUrl = `${cleanTvUrl}/meta/${forwardType}/${idWithExt}`;
 
         const headers = {
             'User-Agent': req.headers['user-agent'] || 'Stremio/4.4.156',
             'Accept': 'application/json, text/plain, */*',
-            'X-Forwarded-For': req.headers['x-forwarded-for'] || req.socket.remoteAddress
+            'X-Forwarded-For': req.headers['x-forwarded-for'] || req.socket.remoteAddress,
+            'Accept-Encoding': 'gzip'
         };
 
         const response = await fetch(targetUrl, { headers, timeout: 5000 });
@@ -41,10 +44,10 @@ export default async function handler(req, res) {
             return res.status(200).json(data);
         }
 
-        return res.status(200).json({ meta: {} });
+        return res.status(404).json({ meta: null });
 
     } catch (error) {
         console.error('Meta Proxy Error:', error);
-        return res.status(200).json({ meta: {} });
+        return res.status(404).json({ meta: null });
     }
 }
