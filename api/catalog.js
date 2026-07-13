@@ -48,7 +48,9 @@ export default async function handler(req, res) {
         const rawCatalogId = urlParts[catIdx + 2];
         const cleanCatalogId = rawCatalogId.replace('.json', '');
         const extraPart = urlParts.slice(catIdx + 3).join('/'); 
-
+        
+        console.log(`[ESAY CATALOG] 🔍 בקשה: type=${type}, id=${cleanCatalogId}, extra=${extraPart}`);
+        
         const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
         const userConfig = configs[userKey] || {};
         const tvAddonUrl = (process.env.TV_ADDON_URL || '').replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
@@ -56,6 +58,7 @@ export default async function handler(req, res) {
 
         // 1. חיפוש מאוחד
         if (cleanCatalogId.startsWith('esay_mixed_search') && extraPart.includes('search=')) {
+            console.log(`[ESAY CATALOG] 🔎 מזהה חיפוש מאוחד! מנתב ל-TV ו-AIO.`);
             const [tvSearchId, aioSearchId] = await Promise.all([
                 tvAddonUrl ? getSearchCatalogId(tvAddonUrl, type) : null,
                 catalogBaseUrl ? getSearchCatalogId(catalogBaseUrl, type) : null
@@ -66,6 +69,7 @@ export default async function handler(req, res) {
                 searchPromises.push(fetch(`${tvAddonUrl}/catalog/${type}/${tvSearchId}/${extraPart}`, { timeout: 5000 }).then(r => r.ok ? r.json() : { metas: [] }).catch(() => ({ metas: [] })));
             }
             if (aioSearchId) {
+                console.log(`[ESAY CATALOG] 🚀 מבקש מ-AIO SEARCH: ${catalogBaseUrl}/catalog/${type}/${aioSearchId}/${extraPart}`);
                 searchPromises.push(fetch(`${catalogBaseUrl}/catalog/${type}/${aioSearchId}/${extraPart}`, { timeout: 5000 }).then(r => r.ok ? r.json() : { metas: [] }).catch(() => ({ metas: [] })));
             }
 
@@ -83,6 +87,7 @@ export default async function handler(req, res) {
                     }
                 }
             }
+            console.log(`[ESAY CATALOG] ✅ נמצאו ${combinedMetas.length} תוצאות בחיפוש המאוחד.`);
             return res.status(200).json({ metas: combinedMetas });
         }
 
@@ -97,11 +102,13 @@ export default async function handler(req, res) {
             if (!catalogBaseUrl) return res.status(404).json({ metas: [] });
             targetUrl = `${catalogBaseUrl}/catalog/${type}/${rawCatalogId}${extraPart ? '/' + extraPart : ''}`;
         }
-        
+
+        console.log(`[ESAY CATALOG] 🚀 מנתב קטלוג רגיל ל: ${targetUrl}`);
         const fetchRes = await fetch(targetUrl, { timeout: 6000 });
         if (!fetchRes.ok) throw new Error(`HTTP ${fetchRes.status}`);
         
         const data = await fetchRes.json();
+        console.log(`[ESAY CATALOG] ✅ התקבלה תגובה מהקטלוג. כמות פריטים: ${data.metas?.length || 0}`);
         return res.status(200).json(data);
 
     } catch (error) {
