@@ -10,11 +10,10 @@ export default async function handler(req, res) {
         const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
         const userConfig = configs[userKey] || { name: 'Unknown', catalogBase: '' };
 
-        let firstKanboxCatalog = null;  // הקטלוג הראשון (Live TV)
-        let aioCatalogs = [];           // כל הקטלוגים מ-AIO
-        let restKanboxCatalogs = [];    // שאר הקטלוגים מהספק הישראלי (VOD)
+        let firstKanboxCatalog = null;
+        let aioCatalogs = [];
+        let restKanboxCatalogs = [];
 
-        // 1. טיפול בספק המקומי (Kanbox) בבטחה
         const tvAddonUrl = process.env.TV_ADDON_URL;
         if (tvAddonUrl) {
             try {
@@ -27,7 +26,6 @@ export default async function handler(req, res) {
                     
                     if (catalogs.length > 0) {
                         firstKanboxCatalog = catalogs[0];
-                        
                         restKanboxCatalogs = catalogs.slice(1).map(cat => ({
                             ...cat,
                             name: cat.name.includes('Israeli') ? cat.name : `Israeli - ${cat.name}`
@@ -39,7 +37,6 @@ export default async function handler(req, res) {
             }
         }
         
-        // 2. משיכת AIOMetaData בבטחה
         if (userConfig.catalogBase) {
             try {
                 const cleanCatalogBase = userConfig.catalogBase.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
@@ -56,7 +53,6 @@ export default async function handler(req, res) {
             }
         }
 
-        // 3. יצירת קטלוגי החיפוש המאוחד של Esay
         const unifiedSearchCatalogs = [
             {
                 id: "esay_mixed_search_movie",
@@ -72,7 +68,6 @@ export default async function handler(req, res) {
             }
         ];
 
-        // 4. הרכבת הסדר הסופי
         const finalCatalogs = [
             ...(firstKanboxCatalog ? [firstKanboxCatalog] : []),
             ...unifiedSearchCatalogs,
@@ -82,13 +77,10 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.4.2", // הקפצת גרסה כדי לאלץ את סטרימיו למחוק מטמון ולשכוח מה-Meta
+            version: "2.4.3", // הקפצת גרסה לעדכון ה-Cache
             name: `Esay - ${userConfig.name || userKey}`,
             description: "Esay Aggregator with Unified Search & Israeli HTTP support",
-            
-            // שימו לב: המילה "meta" הוסרה לחלוטין מכאן!
-            resources: ["stream", "subtitles", "catalog"], 
-            
+            resources: ["stream", "subtitles", "catalog", "meta"], // תמיכה ב-meta הוחזרה עבור קנבוקס
             types: ["movie", "series", "anime", "tv", "channel"],
             catalogs: finalCatalogs
         });
