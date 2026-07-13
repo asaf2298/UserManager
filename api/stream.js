@@ -107,11 +107,11 @@ export default async function handler(req, res) {
         const id = idWithExt.replace('.json', '');
 
         // ==========================================
-        // ערוצי טלוויזיה / לייב (כולל לוגים מלאים)
+        // ערוצי טלוויזיה / לייב (כולל הדפסת ה-JSON המלא)
         // ==========================================
         if (type === 'tv' || type === 'channel') {
             const tvAddonUrl = process.env.TV_ADDON_URL;
-            console.log(`[ESAY DIAGNOSTIC - LIVE] ערוץ חי זוהה: ${idWithExt}. כתובת בסיס מהסביבה: ${tvAddonUrl}`);
+            console.log(`[ESAY DIAGNOSTIC - LIVE] ערוץ חי זוהה: ${idWithExt}. כתובת בסיס: ${tvAddonUrl}`);
             
             if (!tvAddonUrl) return res.status(200).json({ streams: [] });
             
@@ -126,8 +126,8 @@ export default async function handler(req, res) {
                 console.log(`[ESAY DIAGNOSTIC - LIVE] 📥 סטטוס תגובה מ-Kanbox: ${tvRes.status}`);
                 if (tvRes.ok) {
                     const tvData = await tvRes.json();
-                    const streamsCount = tvData.streams ? tvData.streams.length : 0;
-                    console.log(`[ESAY DIAGNOSTIC - LIVE] ✅ נמצאו ${streamsCount} קישורים. מחזיר לסטרימיו.`);
+                    const streamsCount = (tvData && Array.isArray(tvData.streams)) ? tvData.streams.length : 0;
+                    console.log(`[ESAY DIAGNOSTIC - LIVE] ✅ נמצאו ${streamsCount} קישורים. תוכן אובייקט הסטרים המלא: ${JSON.stringify(tvData)}`);
                     return res.status(200).json(tvData);
                 }
             } catch (e) {
@@ -172,10 +172,9 @@ export default async function handler(req, res) {
 
         let promises = addons.map(url => fetchFromAddon(url));
 
-        // תרגום וחיפוש טקסט (אנגלית)
         if (id.startsWith('tt')) {
             const baseId = id.split(':')[0]; 
-            const movieName = await getMetaName(type, baseId); // מושך את השם הבינלאומי (באנגלית)
+            const movieName = await getMetaName(type, baseId); 
             if (movieName) {
                 console.log(`[ESAY DIAGNOSTIC - SEARCH] 🔍 נמצא שם באנגלית (Cinemeta): "${movieName}". מזריק לתוספים כמנגנון Fallback...`);
                 const textSearchPromises = addons.map(baseUrl => fetchFromAddon(baseUrl, `search=${encodeURIComponent(movieName)}.json`));
@@ -252,7 +251,6 @@ export default async function handler(req, res) {
             const isU = isUsenet(s);
             const titleLog = (s.title || s.name || '').substring(0, 40).replace(/\n/g, ' ');
 
-            // לוגים ייעודיים לאיתור Uncached ו-Usenet
             if (isU) {
                 console.log(`[ESAY DIAGNOSTIC - IDENTIFY] 🗄️ זוהה Usenet: ${titleLog}`);
             } else if (!isC) {
@@ -337,9 +335,6 @@ export default async function handler(req, res) {
             }
         });
 
-        // ==========================================
-        // שילוב ה-VIP בראש הרשימה
-        // ==========================================
         let finalSliced = [...vipStreams, ...standardResult];
         console.log(`[ESAY DIAGNOSTIC - MERGE] סה"כ רשימה: ${vipStreams.length} VIP (הודבקו בראש) + ${standardResult.length} סטנדרט. סה"כ: ${finalSliced.length}`);
 
