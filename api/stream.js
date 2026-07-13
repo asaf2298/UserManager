@@ -152,7 +152,7 @@ export default async function handler(req, res) {
             }
         };
 
-                let promises = addonUrls.map(url => fetchFromAddon(url));
+                let promises = addons.map(url => fetchFromAddon(url));
 
         // --- מנגנון תרגום IMDB לשם לחיפוש בספקי HTTP ---
         if (id.startsWith('tt')) {
@@ -162,7 +162,7 @@ export default async function handler(req, res) {
                 
                 // יוצרים בקשות חיפוש טקסטואליות לכל הלינקים שמתחילים ב-http
                 // אנחנו מריצים אותן במקביל לסטרימים הרגילים
-                const textSearchPromises = addonUrls.map(baseUrl => {
+                const textSearchPromises = addons.map(baseUrl => {
                     // הופכים את הבקשה לחיפוש טקסטואלי (פרוטוקול חיפוש סטנדרטי בסטרימיו)
                     const cleanBaseUrl = baseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
                     const searchUrl = `${cleanBaseUrl}/stream/${type}/search=${encodeURIComponent(movieName)}.json`;
