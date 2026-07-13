@@ -19,7 +19,9 @@ function getTextForAnalysis(stream) {
 }
 function isCached(stream) {
     const text = getTextForAnalysis(stream);
-    return text.includes('torbox+') || text.includes('cached') || text.includes('rd+') || (stream.url && stream.url.startsWith('http'));
+    // בודק אם יש לינק ישיר שמתחיל ב-http או ב-acestream
+    const isDirectStream = stream.url && (stream.url.startsWith('http') || stream.url.startsWith('acestream'));
+    return text.includes('torbox+') || text.includes('cached') || text.includes('rd+') || isDirectStream;
 }
 function isUsenet(stream) {
     return getTextForAnalysis(stream).includes('usenet') || getTextForAnalysis(stream).includes('nzb');
@@ -53,7 +55,15 @@ function getResWeight(text) {
     if (text.includes('720p') || text.includes('hd')) return 2;
     return 1;
 }
-
+async function getMetaName(type, id) {
+    try {
+        const response = await fetch(`https://v3-cinemeta.strem.io/meta/${type}/${id}.json`);
+        const data = await response.json();
+        return data.meta?.name || null;
+    } catch (e) {
+        return null;
+    }
+}
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -142,8 +152,27 @@ export default async function handler(req, res) {
             }
         };
 
-        const promises = addons.map(url => fetchFromAddon(url));
+                let promises = addonUrls.map(url => fetchFromAddon(url));
 
+        // --- מנגנון תרגום IMDB לשם לחיפוש בספקי HTTP ---
+        if (id.startsWith('tt')) {
+            const movieName = await getMetaName(type, id);
+            if (movieName) {
+                console.log(`[Vecret Search] Translating ${id} to "${movieName}" for HTTP providers...`);
+                
+                // יוצרים בקשות חיפוש טקסטואליות לכל הלינקים שמתחילים ב-http
+                // אנחנו מריצים אותן במקביל לסטרימים הרגילים
+                const textSearchPromises = addonUrls.map(baseUrl => {
+                    // הופכים את הבקשה לחיפוש טקסטואלי (פרוטוקול חיפוש סטנדרטי בסטרימיו)
+                    const cleanBaseUrl = baseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
+                    const searchUrl = `${cleanBaseUrl}/stream/${type}/search=${encodeURIComponent(movieName)}.json`;
+                    
+                    return fetchFromAddon(searchUrl); // משתמשים באותה פונקציה שכבר כתבת
+                });
+                
+                promises = promises.concat(textSearchPromises);
+            }
+        }
         // --- מערכת ניהול זמנים דינמית חכמה (מותאמת למגבלת Vercel) ---
         let allStreams = [];
         let pendingCount = promises.length;
