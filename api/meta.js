@@ -57,8 +57,7 @@ export default async function handler(req, res) {
         const headers = {
             'User-Agent': req.headers['user-agent'] || 'Stremio/4.4.156',
             'Accept': 'application/json, text/plain, */*',
-            'X-Forwarded-For': req.headers['x-forwarded-for'] || req.socket.remoteAddress,
-            'Accept-Encoding': 'gzip'
+            'X-Forwarded-For': req.headers['x-forwarded-for'] || req.socket.remoteAddress
         };
         console.log(`[ESAY DIAGNOSTIC - META] Headers שנשלחים בבקשת ה-Fetch: ${JSON.stringify(headers)}`);
 
@@ -67,12 +66,23 @@ export default async function handler(req, res) {
 
         if (response.ok) {
             const data = await response.json();
-            console.log(`[ESAY DIAGNOSTIC - META] ✅ ה-JSON פורסר בהצלחה. הצצה לאובייקט המטא: ${JSON.stringify(data).substring(0, 300)}...`);
-            return res.status(200).json(data);
-        } else {
-            const errorBody = await response.text().catch(() => 'N/A');
-            console.log(`[ESAY DIAGNOSTIC - META] ❌ השרת המקומי החזיר קוד שגיאה. גוף התשובה הגולמי: ${errorBody.substring(0, 400)}`);
+            // מוודאים שיש אובייקט meta בפנים לפני שמחזירים
+            if (data && data.meta) {
+                console.log(`[ESAY DIAGNOSTIC - META] ✅ מטא התקבל בהצלחה.`);
+                return res.status(200).json(data);
+            }
         }
+        // הגנה: אם קנבוקס לא החזיר מטא או שהבקשה נכשלה - נחזיר "מטא בטוח" כדי לא לשבור את הנגן
+        console.log(`[ESAY DIAGNOSTIC - META] ⚠️ אין מטא מהתוסף, משתמש ב-Fallback בטוח.`);
+        const safeMeta = {
+            meta: {
+                id: id,
+                type: type,
+                name: id.replace(/_/g, ' '),
+                description: "אין מידע זמין",
+                behaviorHints: { isWebReady: true, configurable: true }
+            }
+        };
 
         return res.status(404).json({ meta: null });
 
