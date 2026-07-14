@@ -117,13 +117,13 @@ export default async function handler(req, res) {
         const idWithExt = rawIdWithExt;
         const id        = idWithExt.replace('.json', '');
 
-        // תיקון Live TV: ניתוב שקוף, לא ממיר יותר ל-series
+        // תיקון: החזרת Kan-Box לעבודה מול 'series' בלייב
         if (type === 'tv' || type === 'channel') {
             const tvAddonUrl = process.env.TV_ADDON_URL;
             if (!tvAddonUrl) return res.status(200).json({ streams: [] });
             try {
                 const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-                const targetUrl  = `${cleanTvUrl}/stream/${type}/${idWithExt}`;
+                const targetUrl  = `${cleanTvUrl}/stream/series/${idWithExt}`;
                 const headers    = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp, 'Accept': 'application/json, text/plain, */*' };
                 const tvRes      = await fetch(targetUrl, { headers, timeout: 9500 });
                 if (tvRes.ok) {
@@ -145,15 +145,16 @@ export default async function handler(req, res) {
             const timeoutId     = setTimeout(() => controller.abort(), profile.timeoutMs);
             const cleanBaseUrl  = baseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
             const finalIdWithExt = customIdWithExt || idWithExt;
-            const targetUrl     = `${cleanBaseUrl}/stream/${type}/${finalIdWithExt}`;
+            let forwardType = type;
             
-            // שיפור הגנות IP למניעת חסימות debrid/torbox
+            // המרה ל-series רק עבור ערוצים חיים מ-Kan-box
+            if (baseUrl.includes('kan-box-addon.vercel.app') && (type === 'tv' || type === 'channel')) forwardType = 'series';
+            const targetUrl = `${cleanBaseUrl}/stream/${forwardType}/${finalIdWithExt}`;
+            
+            // תיקון קריטי: הוסרה משלוח כותרות CF מזויפות כדי למנוע חסימת Cloudflare אצל ספקי Debrid
             const fetchHeaders = { 
                 'User-Agent': clientUA, 
-                'X-Forwarded-For': clientIp,
-                'X-Real-IP': clientIp,
-                'CF-Connecting-IP': clientIp,
-                'Forwarded': `for=${clientIp}`
+                'X-Forwarded-For': clientIp
             };
             
             try {
@@ -276,7 +277,6 @@ export default async function handler(req, res) {
 
         let finalSliced = [...vipStreams, ...standardResult].slice(0, profile.maxResults);
 
-        // --- תיקון קריטי: מיון סופי ואבסולוטי לפני יצירת השמות ---
         finalSliced.sort((a, b) => {
             const vipA = isVIPSource(a); const vipB = isVIPSource(b);
             if (vipA !== vipB) return vipA ? -1 : 1;
@@ -295,19 +295,17 @@ export default async function handler(req, res) {
                 if (sA !== sB) return sB - sA;
             }
 
-            return getSizeGB(b) - getSizeGB(a); // הערה: משקל הוא שובר השוויון האחרון (ולכן 4K קל ינצח 1080p כבד)
+            return getSizeGB(b) - getSizeGB(a);
         });
 
         const REGEX_BRACKETS = /\[[^\]]*(torbox|tb\b|rd|ad|pm|cached|real-?debrid|all-?debrid|premiumize|elfhosted|elfcache)[^\]]*\]/gi;
         const REGEX_PARENS   = /\([^)]*(torbox|tb\b|rd|ad|pm|cached|real-?debrid|all-?debrid|premiumize|elfhosted|elfcache)[^)]*\)/gi;
         const REGEX_DOWNLOAD = /\[[^\]]*(download|⬇️)[^\]]*\]/gi;
 
-        // בניית שמות עם מספור עוקב מ-1 עד 30 שמבטיח תצוגה מלאה
         finalSliced = finalSliced.map((stream, index) => {
             const text        = getTextForAnalysis(stream);
             const isVip       = isVIPSource(stream);
             const isC         = isCached(stream);
-            const hasDebridTag = /rd\+?|torbox|tb\b|comet|ad\+?|pm\+?|cached|real-?debrid|premiumize|elfhosted|elfcache|all-?debrid|stremthru/i.test(text);
             const position    = index + 1;
 
             let cleanName = (stream.name || '').replace(REGEX_BRACKETS, '').replace(REGEX_PARENS, '').replace(REGEX_DOWNLOAD, '');
@@ -316,7 +314,6 @@ export default async function handler(req, res) {
 
             let prefix = isVip ? 'מרשת דפדפן' : (isC ? 'זמין לצפייה' : 'דורש המתנה ואולי כניסה חוזרת');
             
-            // תיוג ה-title מונע מ-Stremio מלקבץ ולהעלים תוצאות רלוונטיות!
             stream.name = `[#${position}] ${prefix} | ${cleanName}`;
             stream.title = `[#${position}]\n${cleanTitle}`;
 
