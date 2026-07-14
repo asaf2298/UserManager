@@ -1,4 +1,5 @@
 import fetch from 'node-fetch';
+import { getCleanMovieName } from './search.js'; // הייבוא החדש והנקי שמחליף את הפונקציה הישנה
 
 const PROFILES = {
     everything:    { maxResults: 30, maxSizeGB: Infinity, minSeedersUncached: 1, hasHDR: true, hasHDAudio: true, timeoutMs: 9500 },
@@ -83,18 +84,6 @@ function getResWeight(stream) {
     return Math.max(...weights);
 }
 
-async function getMetaName(type, id) {
-    try {
-        const controller = new AbortController();
-        const timeoutId  = setTimeout(() => controller.abort(), 2500);
-        const response   = await fetch(`https://v3-cinemeta.strem.io/meta/${type}/${id}.json`, { signal: controller.signal });
-        clearTimeout(timeoutId);
-        if (!response.ok) return null;
-        const data = await response.json();
-        return data.meta?.name || null;
-    } catch (e) { return null; }
-}
-
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin',  '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -163,7 +152,7 @@ export default async function handler(req, res) {
             const targetUrl = `${cleanBaseUrl}/stream/${forwardType}/${finalIdWithExt}`;
             
             const fetchHeaders = { 'User-Agent': clientUA };
-            // הוספת ה-IP רק עבור התוסף הספציפי שזקוק לו
+            // הוספת ה-IP רק עבור התוסף הספציפי שזקוק לו כדי למנוע חסימות Cloudflare
             if (baseUrl.includes('kan-box-addon.vercel.app')) {
                 fetchHeaders['X-Forwarded-For'] = clientIp;
             }  
@@ -184,11 +173,12 @@ export default async function handler(req, res) {
             }
         };
 
+        // התחלת השאיבה מבוססת ה-ID במקביל ללא המתנה נוספת
         let promises = addons.map(url => fetchFromAddon(url));
 
         if (id.startsWith('tt')) {
-            const baseId    = id.split(':')[0];
-            const movieName = await getMetaName(type, baseId);
+            // שימוש בפונקציית העל החדשה מקובץ metaHelper - מעביר לה את ה-id השלם
+            const movieName = await getCleanMovieName(type, id);
             if (movieName) {
                 console.log(`[ESAY DIAGNOSTIC - STREAM] 🔎 מבצע חיפוש טקסטואלי נלווה עבור: "${movieName}"`);
                 const textSearchPromises = addons.map(baseUrl => fetchFromAddon(baseUrl, `search=${encodeURIComponent(movieName)}.json`));
