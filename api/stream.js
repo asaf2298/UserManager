@@ -1,5 +1,5 @@
 import fetch from 'node-fetch';
-import { getCleanMovieName } from './search.js'; // הייבוא החדש והנקי שמחליף את הפונקציה הישנה
+import { getCleanMovieName } from './search.js'; 
 
 const PROFILES = {
     everything:    { maxResults: 30, maxSizeGB: Infinity, minSeedersUncached: 1, hasHDR: true, hasHDAudio: true, timeoutMs: 9500 },
@@ -10,9 +10,6 @@ const PROFILES = {
 
 const REGEX_SIZE    = /(\d+(?:\.\d+)?)\s*(GB|MB)/i;
 const REGEX_SEEDERS = /(?:👤|seeders?:?)\s*(\d+)/i;
-const KNOWN_DISTRIBUTOR_PATTERN = /\b(wolf-?4k|not-?4kyet|team-?4k|group-?720p?|rd-?480|yify|rarbg|ettv|eztv|fgt|shaanig|galaxyrg|tigole|qxr)\b/gi;
-
-function stripKnownDistributors(text) { return text.replace(KNOWN_DISTRIBUTOR_PATTERN, ' '); }
 
 const RES_WEIGHT_MAP = {
     '4k': 4, '2160p': 4, 'uhd': 4,
@@ -20,16 +17,16 @@ const RES_WEIGHT_MAP = {
     '720p': 2, 'hdrip': 2,
     '480p': 1, 'sd': 1,
 };
-const REGEX_RES_ALL = /\b(4k|2160p|uhd|1080p|fhd|720p|hdrip|480p|sd)\b/gi;
 
 function getTextForAnalysis(stream) {
     return ((stream.name || '') + ' ' + (stream.title || '') + ' ' + (stream.description || '')).toLowerCase();
 }
 
+// תוקן: Regex מדויק ללא False Positives
 function isCached(stream) {
     const text = getTextForAnalysis(stream);
     if (text.includes('download') || text.includes('⬇️')) return false;
-    const hasCacheKeywords = /torbox|tb\b|comet|cached|rd\+?|elfhosted|elfcache|all-?debrid|\bad\b|\bad\+|premiumize|\bpm\b|debrid-?link|\bdl\b|stremthru/i.test(text);
+    const hasCacheKeywords = /torbox|\btb\b|comet|\bcached\b|\brd\+|elfhosted|elfcache|all-?debrid|\bad\+|premiumize|debrid-?link|stremthru/i.test(text);
     if (hasCacheKeywords) return true;
     if (stream.infoHash) return false;
     if (stream.url && (stream.url.startsWith('magnet:') || stream.url.toLowerCase().endsWith('.torrent'))) return false;
@@ -70,16 +67,23 @@ function getQualityWeight(text) {
     return 0;
 }
 
+// תוקן: זיהוי רזולוציה מתקדם באמצעות תוחמים למניעת טעויות זיהוי
 function getResWeight(stream) {
     if (isVIPSource(stream) || stream.behaviorHints?.bingeGroup === 'live-tv') return 3;
     const rawText = getTextForAnalysis(stream);
-    const cleanedText = stripKnownDistributors(rawText);
-    const found = cleanedText.match(REGEX_RES_ALL);
-    if (!found) {
-        if (cleanedText.includes('remux') || cleanedText.includes('bluray')) return 3;
+    let match;
+    const found = [];
+    const regexRes = /(?:^|[.\s\[\-_(])(4k|2160p|uhd|1080p|fhd|720p|hdrip|480p|sd)(?:[.\s\]\-_)]|$)/gi;
+    
+    while ((match = regexRes.exec(rawText)) !== null) {
+        found.push(match[1].toLowerCase());
+    }
+    
+    if (found.length === 0) {
+        if (rawText.includes('remux') || rawText.includes('bluray')) return 3;
         return 0; 
     }
-    const weights = [...new Set(found.map(tag => RES_WEIGHT_MAP[tag.toLowerCase()]))];
+    const weights = [...new Set(found.map(tag => RES_WEIGHT_MAP[tag]))];
     if (weights.length === 1) return weights[0];
     return Math.max(...weights);
 }
@@ -96,7 +100,6 @@ export default async function handler(req, res) {
 
     console.log(`\n[ESAY DIAGNOSTIC - STREAM] 🟢 בקשת סטרים חדשה התקבלה!`);
     console.log(`[ESAY DIAGNOSTIC - STREAM] 🌐 URL: ${req.url}`);
-    console.log(`[ESAY DIAGNOSTIC - STREAM] 🕵️ Client IP: ${clientIp}`);
 
     try {
         const urlParts  = req.url.split('?')[0].split('/');
@@ -113,18 +116,26 @@ export default async function handler(req, res) {
         const idWithExt = rawIdWithExt;
         const id        = idWithExt.replace('.json', '');
 
+        // הוספת הגנת Timeout לענף ה-Live TV הקריטי
         if (type === 'tv' || type === 'channel') {
             const tvAddonUrl = process.env.TV_ADDON_URL;
             if (!tvAddonUrl) return res.status(200).json({ streams: [] });
             try {
                 const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
                 const targetUrl  = `${cleanTvUrl}/stream/series/${idWithExt}`;
-                console.log(`[ESAY DIAGNOSTIC - LIVE] 🚀 ניתוב ישיר לערוץ חי: ${targetUrl}`);
                 const headers    = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp, 'Accept': 'application/json, text/plain, */*' };
-                const tvRes      = await fetch(targetUrl, { headers, timeout: 9500 });
+                
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 9500);
+                let tvRes;
+                try {
+                    tvRes = await fetch(targetUrl, { headers, signal: controller.signal });
+                } finally {
+                    clearTimeout(timeoutId);
+                }
+
                 if (tvRes.ok) {
                     const tvData = await tvRes.json();
-                    console.log(`[ESAY DIAGNOSTIC - LIVE] ✅ התקבלו ${tvData.streams?.length || 0} סטרימים של ערוץ חי בהצלחה.`);
                     return res.status(200).json(tvData);
                 }
             } catch (e) {
@@ -138,7 +149,6 @@ export default async function handler(req, res) {
         const profile       = PROFILES[profileConfig] || PROFILES.friends_light;
         const addons        = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
         
-        console.log(`[ESAY DIAGNOSTIC - STREAM] ⚙️ פרופיל מוגדר: ${profileConfig} | תוספים לפניה: ${addons.length}`);
         if (addons.length === 0) return res.status(200).json({ streams: [] });
 
         const fetchFromAddon = async (baseUrl, customIdWithExt = null) => {
@@ -152,13 +162,12 @@ export default async function handler(req, res) {
             const targetUrl = `${cleanBaseUrl}/stream/${forwardType}/${finalIdWithExt}`;
             
             const fetchHeaders = { 'User-Agent': clientUA };
-            // הוספת ה-IP רק עבור התוסף הספציפי שזקוק לו כדי למנוע חסימות Cloudflare
             if (baseUrl.includes('kan-box-addon.vercel.app')) {
                 fetchHeaders['X-Forwarded-For'] = clientIp;
             }  
             
             try {
-                const response = await fetch(targetUrl, { signal: controller.signal, headers: fetchHeaders, timeout: profile.timeoutMs });
+                const response = await fetch(targetUrl, { signal: controller.signal, headers: fetchHeaders });
                 if (!response.ok) return [];
                 const data = await response.json();
                 if (data && Array.isArray(data.streams)) {
@@ -173,14 +182,11 @@ export default async function handler(req, res) {
             }
         };
 
-        // התחלת השאיבה מבוססת ה-ID במקביל ללא המתנה נוספת
         let promises = addons.map(url => fetchFromAddon(url));
 
         if (id.startsWith('tt')) {
-            // שימוש בפונקציית העל החדשה מקובץ metaHelper - מעביר לה את ה-id השלם
             const movieName = await getCleanMovieName(type, id);
             if (movieName) {
-                console.log(`[ESAY DIAGNOSTIC - STREAM] 🔎 מבצע חיפוש טקסטואלי נלווה עבור: "${movieName}"`);
                 const textSearchPromises = addons.map(baseUrl => fetchFromAddon(baseUrl, `search=${encodeURIComponent(movieName)}.json`));
                 promises = promises.concat(textSearchPromises);
             }
@@ -189,15 +195,6 @@ export default async function handler(req, res) {
         let allStreams = [];
         const trackPromises = promises.map(p => p.then(val => { if (Array.isArray(val)) allStreams = allStreams.concat(val); return val; }).catch(() => {}));
         await Promise.race([Promise.allSettled(trackPromises), new Promise(resolve => setTimeout(resolve, 5000))]);
-
-        console.log(`[ESAY DIAGNOSTIC - STREAM] 📥 סה"כ סטרימים גולמיים שנאספו: ${allStreams.length}`);
-
-        const sortedByWeightRaw = [...allStreams].sort((a,b) => getSizeGB(b) - getSizeGB(a));
-        console.log(`[ESAY DIAGNOSTIC - STREAM] 🏋️‍♂️ 5 הסטרימים הכבדים ביותר שהתקבלו מהתוספים (לפני ניקוי):`);
-        sortedByWeightRaw.slice(0, 5).forEach((s, i) => {
-            const cleanT = s.title ? s.title.replace(/\n/g, ' ').substring(0, 35) : 'No Title';
-            console.log(`   --> ${i+1}. המשקל: ${getSizeGB(s).toFixed(2)}GB | Source: ${s.name || 'Unknown'} | Title: ${cleanT}...`);
-        });
 
         const deduplicatedStreams = [];
         for (const stream of allStreams) {
@@ -219,8 +216,6 @@ export default async function handler(req, res) {
             if (!isDuplicate) deduplicatedStreams.push(stream);
         }
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] 🔄 אחרי Deduplication (מחיקת כפילויות): נותרו ${deduplicatedStreams.length} סטרימים יחודיים.`);
-
         const topTierStreams = [];
         const fallbackStreams = [];
         for (const stream of deduplicatedStreams) {
@@ -236,15 +231,11 @@ export default async function handler(req, res) {
             (isTopTier ? topTierStreams : fallbackStreams).push(stream);
         }
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] ✂️ סינון פרופיל: נכנסו ל-Top Tier: ${topTierStreams.length} | נפלו ל-Fallback: ${fallbackStreams.length}`);
-
         const vipStreams      = [];
         const standardStreams = [];
         for (const stream of topTierStreams) {
             (isVIPSource(stream) ? vipStreams : standardStreams).push(stream);
         }
-
-        console.log(`[ESAY DIAGNOSTIC - STREAM] ⭐ סיווג VIP (מרשת דפדפן): נמצאו ${vipStreams.length}. רגילים: ${standardStreams.length}`);
 
         const buckets = { '4k_c': [], '4k_u': [], '1080p_c': [], '1080p_u': [], '720p_c': [], '720p_u': [], 'sd_c': [], 'sd_u': [] };
 
@@ -255,8 +246,6 @@ export default async function handler(req, res) {
             else if (rw === 2) buckets[`720p${sfx}`].push(s);
             else buckets[`sd${sfx}`].push(s);
         }
-
-        console.log(`[ESAY DIAGNOSTIC - STREAM] 🪣 מצב דליים: 4k_c(${buckets['4k_c'].length}), 4k_u(${buckets['4k_u'].length}), 1080p_c(${buckets['1080p_c'].length}), 1080p_u(${buckets['1080p_u'].length})`);
 
         const isBigProfile = (profileConfig === 'everything' || profileConfig === 'friends_heavy');
         const quotas = isBigProfile
@@ -282,57 +271,56 @@ export default async function handler(req, res) {
             return missing;
         }
 
-        let cascade = 0;
-        cascade = drawWithOverflow('4k', quotas['4k_c'] + cascade, quotas['4k_u']);
-        cascade = drawWithOverflow('1080p', quotas['1080p_c'] + cascade, quotas['1080p_u']);
-        cascade = drawWithOverflow('720p', quotas['720p_c'] + cascade, quotas['720p_u']);
-        cascade = drawWithOverflow('sd', quotas['sd_c'] + cascade, quotas['sd_u']);
-
-        console.log(`[ESAY DIAGNOSTIC - STREAM] 📊 נשאבו ${standardResult.length} סטרימים לפי חוקי המכסות. (חורים שנגררו: ${cascade})`);
+        drawWithOverflow('4k', quotas['4k_c'], quotas['4k_u']);
+        drawWithOverflow('1080p', quotas['1080p_c'], quotas['1080p_u']);
+        drawWithOverflow('720p', quotas['720p_c'], quotas['720p_u']);
+        drawWithOverflow('sd', quotas['sd_c'], quotas['sd_u']);
 
         for (const key of Object.keys(buckets)) {
             if (buckets[key].length > 0) fallbackStreams.push(...buckets[key]);
         }
 
+        // תוקן: מיון מוחלט (Sort before Slice) לפי הסדר החדש: VIP > Res > Cached > Quality > Size
+        let finalCandidates = [...vipStreams, ...standardResult];
+        
         const standardBudget  = profile.maxResults - vipStreams.length;
         const missingSlots    = standardBudget - standardResult.length;
 
         if (missingSlots > 0 && fallbackStreams.length > 0) {
-            console.log(`[ESAY DIAGNOSTIC - STREAM] 🛡️ מפעיל רשת ביטחון: חסרים ${missingSlots} מקומות. שואב תוכן בצורה נאמנה לסדר הרזולוציות של הדליים.`);
-            standardResult.push(...fallbackStreams.slice(0, missingSlots));
+            finalCandidates.push(...fallbackStreams.slice(0, missingSlots));
         }
 
-        let finalSliced = [...vipStreams, ...standardResult].slice(0, profile.maxResults);
-
-        console.log(`[ESAY DIAGNOSTIC - STREAM] ⚖️ מבצע מיון אבסולוטי ואחרון לפני שילוח על ${finalSliced.length} תוצאות סופיות.`);
+        console.log(`[ESAY DIAGNOSTIC - STREAM] ⚖️ מבצע מיון אבסולוטי על ${finalCandidates.length} תוצאות לפני חיתוך.`);
         
-        finalSliced.sort((a, b) => {
+        finalCandidates.sort((a, b) => {
             const vipA = isVIPSource(a); const vipB = isVIPSource(b);
-            if (vipA !== vipB) return vipA ? -1 : 1;
-
-            const cA = isCached(a); const cB = isCached(b);
-            if (cA !== cB) return cA ? -1 : 1;
+            if (vipA !== vipB) return vipA ? -1 : 1; // 1. VIP מנצח
 
             const rA = getResWeight(a); const rB = getResWeight(b);
-            if (rA !== rB) return rB - rA;
+            if (rA !== rB) return rB - rA; // 2. רזולוציה קובעת (4K > 1080p)
+
+            const cA = isCached(a); const cB = isCached(b);
+            if (cA !== cB) return cA ? -1 : 1; // 3. מטמון קובע (Cached > Uncached) בתוך אותה רזולוציה
 
             const qA = getQualityWeight(getTextForAnalysis(a)); const qB = getQualityWeight(getTextForAnalysis(b));
-            if (qA !== qB) return qB - qA;
+            if (qA !== qB) return qB - qA; // 4. איכות משנית (Remux > WebDL)
 
             if (!cA && !cB) {
                 const sA = getSeeders(a) ?? 0; const sB = getSeeders(b) ?? 0;
-                if (sA !== sB) return sB - sA;
+                if (sA !== sB) return sB - sA; // 5. מספר סידרים חשוב ל-Uncached
             }
 
-            return getSizeGB(b) - getSizeGB(a);
+            return getSizeGB(b) - getSizeGB(a); // 6. גודל יכריע שובר שוויון (כבד יותר > קל יותר)
         });
+
+        // החיתוך (Slice) מתבצע רק אחרי שהכל סודר למופת!
+        let finalSliced = finalCandidates.slice(0, profile.maxResults);
 
         const REGEX_BRACKETS = /\[[^\]]*(torbox|tb\b|rd|ad|pm|cached|real-?debrid|all-?debrid|premiumize|elfhosted|elfcache)[^\]]*\]/gi;
         const REGEX_PARENS   = /\([^)]*(torbox|tb\b|rd|ad|pm|cached|real-?debrid|all-?debrid|premiumize|elfhosted|elfcache)[^)]*\)/gi;
         const REGEX_DOWNLOAD = /\[[^\]]*(download|⬇️)[^\]]*\]/gi;
 
         finalSliced = finalSliced.map((stream, index) => {
-            const text        = getTextForAnalysis(stream);
             const isVip       = isVIPSource(stream);
             const isC         = isCached(stream);
             const position    = index + 1;
