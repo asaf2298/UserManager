@@ -1,5 +1,15 @@
 import fetch from 'node-fetch';
 
+async function fetchWithTimeout(url, options, timeoutMs) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     if (req.method === 'OPTIONS') return res.status(200).end();
@@ -18,7 +28,7 @@ export default async function handler(req, res) {
         if (tvAddonUrl) {
             try {
                 const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-                const tvRes = await fetch(`${cleanTvUrl}/manifest.json`, { timeout: 4600 });
+                const tvRes = await fetchWithTimeout(`${cleanTvUrl}/manifest.json`, {}, 4600);
                 if (tvRes.ok) {
                     const tvManifest = await tvRes.json();
                     const catalogs = tvManifest?.catalogs || [];
@@ -38,7 +48,7 @@ export default async function handler(req, res) {
         if (userConfig.catalogBase) {
             try {
                 const cleanCatalogBase = userConfig.catalogBase.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-                const catRes = await fetch(`${cleanCatalogBase}/manifest.json`, { timeout: 4600 });
+                const catRes = await fetchWithTimeout(`${cleanCatalogBase}/manifest.json`, {}, 4600);
                 if (catRes.ok) {
                     const catManifest = await catRes.json();
                     if (catManifest?.catalogs) {
@@ -57,7 +67,7 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.4.6", // <-- הקפצת גרסה לאיפוס מטמון שגיאות ה-Meta בסטרימיו
+            version: "2.4.6",
             name: `Esay - ${userConfig.name || userKey}`,
             description: "Esay Aggregator with Unified Search & LiveTV Israel",
             resources: ["stream", "subtitles", "catalog", "meta"],
