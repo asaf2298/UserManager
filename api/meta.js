@@ -1,7 +1,7 @@
 import fetch from 'node-fetch';
 
 export default async function handler(req, res) {
-    res.setHeader('Access-Control-Allow-Origin',  '*');
+    res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     if (req.method === 'OPTIONS') return res.status(200).end();
@@ -11,7 +11,7 @@ export default async function handler(req, res) {
 
     try {
         const urlParts = req.url.split('?')[0].split('/');
-        const metaIdx  = urlParts.indexOf('meta');
+        const metaIdx = urlParts.indexOf('meta');
 
         if (metaIdx < 0 || metaIdx + 2 >= urlParts.length) {
             console.log(`[ESAY DIAGNOSTIC - META] ❌ מבנה URL לא תקין. מערך חלקים: ${JSON.stringify(urlParts)}`);
@@ -29,10 +29,9 @@ export default async function handler(req, res) {
         }
 
         const idWithExt = rawIdWithExt;
-        const id        = idWithExt.replace('.json', '');
+        const id = idWithExt.replace('.json', '');
         console.log(`[ESAY DIAGNOSTIC - META] מזהה נקי לעבודה (ללא סיומת): "${id}"`);
 
-        // מזהה IMDb → fallback ל-Cinemeta
         if (id.startsWith('tt')) {
             console.log(`[ESAY DIAGNOSTIC - META] ⏩ מזהה IMDb זוהה (${id}). מחזיר 404 כדי לאפשר פולבק ל-Cinemeta.`);
             return res.status(404).json({ meta: null });
@@ -46,14 +45,15 @@ export default async function handler(req, res) {
             return res.status(404).json({ meta: null });
         }
 
-        const cleanTvUrl  = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
+        const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
+
         const forwardType = (type === 'tv' || type === 'channel') ? 'series' : type;
-        const targetUrl   = `${cleanTvUrl}/meta/${forwardType}/${idWithExt}`;
+        const targetUrl = `${cleanTvUrl}/meta/${forwardType}/${idWithExt}`;
         console.log(`[ESAY DIAGNOSTIC - META] 🚀 מנתב פניית מטא אל עבר השרת המקומי: "${targetUrl}"`);
 
         const headers = {
-            'User-Agent':      req.headers['user-agent'] || 'Stremio/4.4.156',
-            'Accept':          'application/json, text/plain, */*',
+            'User-Agent': req.headers['user-agent'] || 'Stremio/4.4.156',
+            'Accept': 'application/json, text/plain, */*',
             'X-Forwarded-For': req.headers['x-forwarded-for'] || req.socket.remoteAddress
         };
         console.log(`[ESAY DIAGNOSTIC - META] Headers שנשלחים בבקשת ה-Fetch: ${JSON.stringify(headers)}`);
@@ -64,23 +64,31 @@ export default async function handler(req, res) {
         if (response.ok) {
             const data = await response.json();
             if (data && data.meta) {
+                // תיקון: עבור ערוצים חיים (tv/channel), ה-description
+                // המקורי מהתוסף מוחלף ב-"שידור חי - {שם הערוץ}"
+                if ((type === 'tv' || type === 'channel') && data.meta) {
+                    const channelName = data.meta.name || id.replace(/_/g, ' ');
+                    data.meta.description = `שידור חי - ${channelName}`;
+                }
+
                 console.log(`[ESAY DIAGNOSTIC - META] ✅ מטא התקבל בהצלחה.`);
                 return res.status(200).json(data);
             }
         }
-
-        // תיקון: safeMeta נשלח בפועל (היה dead code)
         console.log(`[ESAY DIAGNOSTIC - META] ⚠️ אין מטא מהתוסף, משתמש ב-Fallback בטוח.`);
         const safeMeta = {
             meta: {
-                id:          id,
-                type:        type,
-                name:        id.replace(/_/g, ' '),
-                description: 'אין מידע זמין',
+                id: id,
+                type: type,
+                name: id.replace(/_/g, ' '),
+                description: (type === 'tv' || type === 'channel')
+                    ? `שידור חי - ${id.replace(/_/g, ' ')}`
+                    : "אין מידע זמין",
                 behaviorHints: { isWebReady: true, configurable: true }
             }
         };
-        return res.status(200).json(safeMeta);
+
+        return res.status(404).json({ meta: null });
 
     } catch (error) {
         console.error(`[ESAY DIAGNOSTIC - META] 💥 קריסה קריטית ב-Meta Handler:`, error.stack || error);
