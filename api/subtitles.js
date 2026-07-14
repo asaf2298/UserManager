@@ -4,7 +4,7 @@ const ALLOWED_LANGS = new Set([
     'he', 'heb', 'hebrew', 'iw', 'he-il', 'עברית',
     'en', 'eng', 'english', 'en-us', 'en-gb',
     'ru', 'rus', 'russian',
-    'submaker', 'forced', 'hi'
+    'submaker', 'make hebrew', 'forced', 'hi'
 ]);
 
 function isAllowedLang(lang, title) {
@@ -68,7 +68,8 @@ export default async function handler(req, res) {
         const uniqueSubsMap = new Map();
         for (const sub of allSubs) {
             const lang = (sub.lang || '').toLowerCase();
-            const key = `${sub.id}_${lang}`; 
+            // תיקון: שימוש ב-URL כמפתח הראשי כדי למנוע דריסת כתוביות עם ID שבור ("1")
+            const key = sub.url ? sub.url : `${sub.id}_${lang}`; 
             if (!uniqueSubsMap.has(key)) {
                 uniqueSubsMap.set(key, sub);
             }
