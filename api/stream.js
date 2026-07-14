@@ -11,6 +11,24 @@ const REGEX_SIZE    = /(\d+(?:\.\d+)?)\s*(GB|MB)/i;
 const REGEX_SEEDERS = /(?:👤|seeders?:?)\s*(\d+)/i;
 
 // ─────────────────────────────────────────────────
+// Whitelist: distributor tags שיכולים להתחזות לתגי רזולוציה
+// (למשל "WOLF4K" מכיל "4K" אבל זה שם קבוצה, לא רזולוציה אמיתית)
+// ─────────────────────────────────────────────────
+const KNOWN_DISTRIBUTOR_PATTERN = /\b(wolf-?4k|not-?4kyet|team-?4k|group-?720p?|rd-?480|yify|rarbg|ettv|eztv|fgt|shaanig|galaxyrg|tigole|qxr)\b/gi;
+
+function stripKnownDistributors(text) {
+    return text.replace(KNOWN_DISTRIBUTOR_PATTERN, ' ');
+}
+
+const RES_WEIGHT_MAP = {
+    '4k': 4, '2160p': 4, 'uhd': 4,
+    '1080p': 3, 'fhd': 3,
+    '720p': 2, 'hdrip': 2,
+    '480p': 1, 'sd': 1,
+};
+const REGEX_RES_ALL = /\b(4k|2160p|uhd|1080p|fhd|720p|hdrip|480p|sd)\b/gi;
+
+// ─────────────────────────────────────────────────
 // helpers
 // ─────────────────────────────────────────────────
 
@@ -19,29 +37,30 @@ function getTextForAnalysis(stream) {
 }
 
 /**
- * isCached – תיקון: HTTP לבד לא מספיק, חייב גם keyword של debrid/cache
- * או שהסטרים הוא VIP (לייב ישיר).
+ * isCached – תיקון קריטי בסדר הבדיקות:
+ *   1. Download → תמיד לא cached (ראשון, ללא תלות ב-infoHash)
+ *   2. תג debrid מפורש (rd+/torbox/וכו') → cached=true, גם אם יש infoHash!
+ *      (ספקי Debrid לפעמים מחזירים infoHash גם על תוכן cached,
+ *       כשה-API שלהם לא חושף endpoint לבדיקת cache ישירה)
+ *   3. רק אם אין תג debrid: infoHash/magnet → not cached (טורנט "רגיל")
+ *   4. HTTP ישיר בלי infoHash ובלי תג debrid → cached=true
+ *      (מקור VOD ישיר, איכות לא ידועה אך זמין לצפייה מיידית)
  */
 function isCached(stream) {
     const text = getTextForAnalysis(stream);
 
-    // טורנט / magnet → תמיד לא cached
-    if (stream.infoHash) return false;
-    if (stream.url && (stream.url.startsWith('magnet:') || stream.url.toLowerCase().endsWith('.torrent'))) return false;
-
-    // אין URL → לא ניתן לנגן ישירות
-    if (!stream.url) return false;
-
-    // Download ← לא cached
     if (text.includes('download') || text.includes('⬇️')) return false;
 
-    // זיהוי מורחב של ספקי Debrid + Cache (תיקון: ad, pm, debrid-link, stremthru)
     const hasCacheKeywords = /torbox|tb\b|comet|cached|rd\+?|elfhosted|elfcache|all-?debrid|\bad\b|\bad\+|premiumize|\bpm\b|debrid-?link|\bdl\b|stremthru/i.test(text);
 
     if (hasCacheKeywords) return true;
 
-    // VIP (לייב): URL ישיר ללא infoHash ללא download-keywords → cached (ניתן לנגן ישירות)
-    if (isVIPSource(stream) && stream.url.startsWith('http')) return true;
+    if (stream.infoHash) return false;
+    if (stream.url && (stream.url.startsWith('magnet:') || stream.url.toLowerCase().endsWith('.torrent'))) return false;
+
+    if (!stream.url) return false;
+
+    if (stream.url.startsWith('http') || stream.url.startsWith('acestream')) return true;
 
     return false;
 }
@@ -80,21 +99,24 @@ function getQualityWeight(text) {
 
 /**
  * getResWeight – תיקון קריטי:
- *   1. 4K נבדק לפני 1080p (היה הפוך!)
- *   2. Live/VIP מזוהה לפי המקור (stream object) ולא לפי טקסט חופשי
- *      כדי שמחרוזות כמו "BDTV" / "HDTV" לא יגנבו weight=3 לפני 4K
- *   3. default → 0 (unknown) ולא 3 – יופנה לדלי "sd/יתר"
+ *   1. Live/VIP מזוהה לפי המקור (stream object), לא לפי טקסט חופשי
+ *   2. distributor tags (WOLF4K וכו') מוסרים לפני חיפוש הרזולוציה
+ *   3. אם נשארו כמה תגי רזולוציה שונים אחרי הניקוי → בוחר במקסימלי (לא "דורס" 4K אמיתי)
  */
 function getResWeight(stream) {
-    // שידורים חיים של VIP: תמיד weight=3 (1080p-tier) ללא קשר לטקסט
     if (isVIPSource(stream) || stream.behaviorHints?.bingeGroup === 'live-tv') return 3;
 
-    const text = getTextForAnalysis(stream);
-    if (/\b(4k|2160p|uhd)\b/i.test(text))  return 4;
-    if (/\b(1080p|fhd)\b/i.test(text))     return 3;
-    if (/\b(720p|hdrip)\b/i.test(text))    return 2;
-    if (/\b(480p|sd)\b/i.test(text))       return 1;
-    return 0; // unknown → יופנה לדלי SD/יתר
+    const rawText = getTextForAnalysis(stream);
+    const cleanedText = stripKnownDistributors(rawText);
+
+    const found = cleanedText.match(REGEX_RES_ALL);
+    if (!found) return 0;
+
+    const weights = [...new Set(found.map(tag => RES_WEIGHT_MAP[tag.toLowerCase()]))];
+
+    if (weights.length === 1) return weights[0];
+
+    return Math.max(...weights);
 }
 
 async function getMetaName(type, id) {
@@ -271,7 +293,7 @@ export default async function handler(req, res) {
         console.log(`[ESAY DIAGNOSTIC - STREAM] ⭐ VIP: ${vipStreams.length} | standard: ${standardStreams.length}`);
 
         // ══════════════════════════════════════════
-        // בניית הדליים – 10 דליים: 4×2 + unknown(יתר)×2
+        // בניית הדליים – 8 דליים: 4×2 (cached/uncached)
         // ══════════════════════════════════════════
         const buckets = {
             '4k_c':      [],
@@ -280,33 +302,31 @@ export default async function handler(req, res) {
             '1080p_u':   [],
             '720p_c':    [],
             '720p_u':    [],
-            'sd_c':      [],   // כולל unknown/0
-            'sd_u':      []    // כולל unknown/0
+            'sd_c':      [],
+            'sd_u':      []
         };
 
         for (const s of standardStreams) {
             const isC  = isCached(s);
-            const rw   = getResWeight(s);   // ← מקבל את אובייקט הסטרים (לא טקסט)
+            const rw   = getResWeight(s);
             const sfx  = isC ? '_c' : '_u';
             if      (rw === 4) buckets[`4k${sfx}`].push(s);
             else if (rw === 3) buckets[`1080p${sfx}`].push(s);
             else if (rw === 2) buckets[`720p${sfx}`].push(s);
-            else               buckets[`sd${sfx}`].push(s);   // rw===1 או rw===0
+            else               buckets[`sd${sfx}`].push(s);
         }
 
-        // מיון פנימי של כל דלי: quality → seeders → size(tie-breaker)
         for (const key of Object.keys(buckets)) {
             buckets[key].sort((a, b) => {
                 const qA = getQualityWeight(getTextForAnalysis(a));
                 const qB = getQualityWeight(getTextForAnalysis(b));
                 if (qA !== qB) return qB - qA;
 
-                // seeders – ברירת מחדל 0 (לא minSeedersUncached)
                 const seedA = getSeeders(a) ?? 0;
                 const seedB = getSeeders(b) ?? 0;
                 if (seedA !== seedB) return seedB - seedA;
 
-                return getSizeGB(b) - getSizeGB(a);  // tie-breaker: גודל קובץ
+                return getSizeGB(b) - getSizeGB(a);
             });
         }
 
@@ -321,31 +341,26 @@ export default async function handler(req, res) {
             : { '4k_c':  3, '4k_u': 1, '1080p_c': 3, '1080p_u': 1, '720p_c': 2, '720p_u': 0, 'sd_c': 0, 'sd_u': 0 };
 
         // ══════════════════════════════════════════
-        // drawWithOverflow – תיקון: מחזיר סך כל החורים (C+U)
-        // סדר ירושה: C_same → U_same → ירידת רזולוציה
+        // drawWithOverflow – סדר ירושה: C_same → U_same → ירידת רזולוציה
         // ══════════════════════════════════════════
         const standardResult = [];
 
         function drawWithOverflow(resLevel, qC, qU) {
-            // שלב 1: משוך מה-Cached
             const pulledC   = buckets[`${resLevel}_c`].splice(0, qC);
             standardResult.push(...pulledC);
             const missingC  = qC - pulledC.length;
 
-            // שלב 2: משוך מה-Uncached + השלמה עבור חורים מ-Cached
             const targetU   = qU + missingC;
             const pulledU   = buckets[`${resLevel}_u`].splice(0, targetU);
             standardResult.push(...pulledU);
             let missing     = targetU - pulledU.length;
 
-            // שלב 3: אם עדיין חסר – קח עוד Cached מאותה רזולוציה
             if (missing > 0 && buckets[`${resLevel}_c`].length > 0) {
                 const extraC = buckets[`${resLevel}_c`].splice(0, missing);
                 standardResult.push(...extraC);
                 missing -= extraC.length;
             }
 
-            // מחזירים את הסך הכולל של חורים שלא מולאו (ירידת רזולוציה)
             return missing;
         }
 
@@ -368,8 +383,7 @@ export default async function handler(req, res) {
         }
 
         // ══════════════════════════════════════════
-        // Safety Net – תיקון: חישוב missingSlots מחוץ ל-VIP
-        // כדי ש-VIP לא "יגנוב" מקומות מה-standardResult
+        // Safety Net
         // ══════════════════════════════════════════
         const standardBudget  = profile.maxResults - vipStreams.length;
         const missingSlots    = standardBudget - standardResult.length;
@@ -402,11 +416,13 @@ export default async function handler(req, res) {
         let finalSliced = [...vipStreams, ...standardResult].slice(0, profile.maxResults);
 
         // ══════════════════════════════════════════
-        // עיצוב שמות (Label)
+        // עיצוב שמות (Label) – עם מספור ייחודי לכל תווית
         // ══════════════════════════════════════════
         const REGEX_BRACKETS = /\[[^\]]*(torbox|tb\b|rd|ad|pm|cached|real-?debrid|all-?debrid|premiumize|elfhosted|elfcache)[^\]]*\]/gi;
         const REGEX_PARENS   = /\([^)]*(torbox|tb\b|rd|ad|pm|cached|real-?debrid|all-?debrid|premiumize|elfhosted|elfcache)[^)]*\)/gi;
         const REGEX_DOWNLOAD = /\[[^\]]*(download|⬇️)[^\]]*\]/gi;
+
+        const labelCounters = { vip: 0, cached: 0, uncached: 0 };
 
         finalSliced = finalSliced.map(stream => {
             const text        = getTextForAnalysis(stream);
@@ -421,12 +437,15 @@ export default async function handler(req, res) {
             cleanTitle = cleanTitle.replace(/\n+/g, ' ').replace(/\s{2,}/g, ' ').trim();
 
             if (isVip || (stream.url && !stream.infoHash && !hasDebridTag)) {
-                stream.name = cleanName ? `מרשת דפדפן | ${cleanName}` : 'מרשת דפדפן';
+                labelCounters.vip += 1;
+                stream.name = cleanName ? `מרשת דפדפן #${labelCounters.vip} | ${cleanName}` : `מרשת דפדפן #${labelCounters.vip}`;
             } else {
                 if (isC) {
-                    stream.name = cleanName ? `זמין לצפייה | ${cleanName}` : 'זמין לצפייה';
+                    labelCounters.cached += 1;
+                    stream.name = cleanName ? `זמין לצפייה #${labelCounters.cached} | ${cleanName}` : `זמין לצפייה #${labelCounters.cached}`;
                 } else {
-                    stream.name = cleanName ? `דורש המתנה ואולי כניסה חוזרת | ${cleanName}` : 'דורש המתנה ואולי כניסה חוזרת';
+                    labelCounters.uncached += 1;
+                    stream.name = cleanName ? `דורש המתנה ואולי כניסה חוזרת #${labelCounters.uncached} | ${cleanName}` : `דורש המתנה ואולי כניסה חוזרת #${labelCounters.uncached}`;
                 }
                 stream.title = cleanTitle;
             }
