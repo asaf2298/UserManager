@@ -25,8 +25,9 @@ export default async function handler(req, res) {
 
         const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
         
-        // --- התיקון: מעביר את ה-type המדויק ל-Kan-Box ללא שינוי! ---
-        const targetUrl = `${cleanTvUrl}/meta/${type}/${idWithExt}`;
+        // --- התיקון: ממיר ל-series מול Kan-Box כדי שיענה ---
+        const forwardType = (type === 'tv' || type === 'channel') ? 'series' : type;
+        const targetUrl = `${cleanTvUrl}/meta/${forwardType}/${idWithExt}`;
 
         const forwardedIps = req.headers['x-forwarded-for'] || '';
         const clientIp = forwardedIps ? forwardedIps.split(',')[0].trim() : (req.socket?.remoteAddress || '');
@@ -42,10 +43,8 @@ export default async function handler(req, res) {
         if (response.ok) {
             const data = await response.json();
             if (data && data.meta) {
-                if ((type === 'tv' || type === 'channel') && data.meta) {
-                    const channelName = data.meta.name || id.replace(/_/g, ' ');
-                    data.meta.description = `שידור חי - ${channelName}`;
-                }
+                // --- התיקון: מבטיח שסטרימיו יקבל את ה-type המקורי שביקש כדי למנוע No Metadata ---
+                data.meta.type = type; 
                 return res.status(200).json(data);
             }
         }
