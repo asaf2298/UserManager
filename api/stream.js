@@ -162,7 +162,11 @@ export default async function handler(req, res) {
             if (baseUrl.includes('kan-box-addon.vercel.app') && (type === 'tv' || type === 'channel')) forwardType = 'series';
             const targetUrl = `${cleanBaseUrl}/stream/${forwardType}/${finalIdWithExt}`;
             
-            const fetchHeaders = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp };
+            const fetchHeaders = { 'User-Agent': clientUA };
+            // הוספת ה-IP רק עבור התוסף הספציפי שזקוק לו
+            if (baseUrl.includes('kan-box-addon.vercel.app')) {
+                fetchHeaders['X-Forwarded-For'] = clientIp;
+            }  
             
             try {
                 const response = await fetch(targetUrl, { signal: controller.signal, headers: fetchHeaders, timeout: profile.timeoutMs });
