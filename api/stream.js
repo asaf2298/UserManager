@@ -10,10 +10,6 @@ const PROFILES = {
 const REGEX_SIZE    = /(\d+(?:\.\d+)?)\s*(GB|MB)/i;
 const REGEX_SEEDERS = /(?:👤|seeders?:?)\s*(\d+)/i;
 
-// ─────────────────────────────────────────────────
-// Whitelist: distributor tags שיכולים להתחזות לתגי רזולוציה
-// (למשל "WOLF4K" מכיל "4K" אבל זה שם קבוצה, לא רזולוציה אמיתית)
-// ─────────────────────────────────────────────────
 const KNOWN_DISTRIBUTOR_PATTERN = /\b(wolf-?4k|not-?4kyet|team-?4k|group-?720p?|rd-?480|yify|rarbg|ettv|eztv|fgt|shaanig|galaxyrg|tigole|qxr)\b/gi;
 
 function stripKnownDistributors(text) {
@@ -28,38 +24,22 @@ const RES_WEIGHT_MAP = {
 };
 const REGEX_RES_ALL = /\b(4k|2160p|uhd|1080p|fhd|720p|hdrip|480p|sd)\b/gi;
 
-// ─────────────────────────────────────────────────
-// helpers
-// ─────────────────────────────────────────────────
-
 function getTextForAnalysis(stream) {
     return ((stream.name || '') + ' ' + (stream.title || '') + ' ' + (stream.description || '')).toLowerCase();
 }
 
-/**
- * isCached – תיקון קריטי בסדר הבדיקות:
- *   1. Download → תמיד לא cached (ראשון, ללא תלות ב-infoHash)
- *   2. תג debrid מפורש (rd+/torbox/וכו') → cached=true, גם אם יש infoHash!
- *      (ספקי Debrid לפעמים מחזירים infoHash גם על תוכן cached,
- *       כשה-API שלהם לא חושף endpoint לבדיקת cache ישירה)
- *   3. רק אם אין תג debrid: infoHash/magnet → not cached (טורנט "רגיל")
- *   4. HTTP ישיר בלי infoHash ובלי תג debrid → cached=true
- *      (מקור VOD ישיר, איכות לא ידועה אך זמין לצפייה מיידית)
- */
 function isCached(stream) {
     const text = getTextForAnalysis(stream);
 
     if (text.includes('download') || text.includes('⬇️')) return false;
 
     const hasCacheKeywords = /torbox|tb\b|comet|cached|rd\+?|elfhosted|elfcache|all-?debrid|\bad\b|\bad\+|premiumize|\bpm\b|debrid-?link|\bdl\b|stremthru/i.test(text);
-
     if (hasCacheKeywords) return true;
 
     if (stream.infoHash) return false;
     if (stream.url && (stream.url.startsWith('magnet:') || stream.url.toLowerCase().endsWith('.torrent'))) return false;
 
     if (!stream.url) return false;
-
     if (stream.url.startsWith('http') || stream.url.startsWith('acestream')) return true;
 
     return false;
@@ -97,12 +77,6 @@ function getQualityWeight(text) {
     return 0;
 }
 
-/**
- * getResWeight – תיקון קריטי:
- *   1. Live/VIP מזוהה לפי המקור (stream object), לא לפי טקסט חופשי
- *   2. distributor tags (WOLF4K וכו') מוסרים לפני חיפוש הרזולוציה
- *   3. אם נשארו כמה תגי רזולוציה שונים אחרי הניקוי → בוחר במקסימלי (לא "דורס" 4K אמיתי)
- */
 function getResWeight(stream) {
     if (isVIPSource(stream) || stream.behaviorHints?.bingeGroup === 'live-tv') return 3;
 
@@ -110,7 +84,11 @@ function getResWeight(stream) {
     const cleanedText = stripKnownDistributors(rawText);
 
     const found = cleanedText.match(REGEX_RES_ALL);
-    if (!found) return 0;
+    if (!found) {
+        // רשת ביטחון ל-Usenet/Remux: נותן משקל של 1080p לאיכויות גבוהות שלא ציינו רזולוציה
+        if (cleanedText.includes('remux') || cleanedText.includes('bluray')) return 3;
+        return 0; 
+    }
 
     const weights = [...new Set(found.map(tag => RES_WEIGHT_MAP[tag.toLowerCase()]))];
 
@@ -133,10 +111,6 @@ async function getMetaName(type, id) {
     }
 }
 
-// ─────────────────────────────────────────────────
-// handler
-// ─────────────────────────────────────────────────
-
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin',  '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -145,7 +119,9 @@ export default async function handler(req, res) {
 
     console.log(`[ESAY DIAGNOSTIC - STREAM] 🟢 בקשת סטרים נכנסת: ${req.url}`);
 
-    const clientIp = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '';
+    // תיקון IP: חילוץ ה-IP הראשון בלבד (של הלקוח) למניעת שגיאת 403 בלייב VOD
+    const forwardedIps = req.headers['x-forwarded-for'] || '';
+    const clientIp = forwardedIps ? forwardedIps.split(',')[0].trim() : (req.socket?.remoteAddress || '');
     const clientUA = req.headers['user-agent'] || 'Stremio/4.4.156';
 
     try {
@@ -162,9 +138,6 @@ export default async function handler(req, res) {
         const idWithExt = rawIdWithExt;
         const id        = idWithExt.replace('.json', '');
 
-        // ══════════════════════════════════════════
-        // ערוצי טלוויזיה / לייב – pass-through ישיר
-        // ══════════════════════════════════════════
         if (type === 'tv' || type === 'channel') {
             const tvAddonUrl = process.env.TV_ADDON_URL;
             if (!tvAddonUrl) return res.status(200).json({ streams: [] });
@@ -183,9 +156,6 @@ export default async function handler(req, res) {
             return res.status(200).json({ streams: [] });
         }
 
-        // ══════════════════════════════════════════
-        // VOD – טעינת פרופיל ו-addons
-        // ══════════════════════════════════════════
         const configs       = JSON.parse(process.env.USER_CONFIGS || '{}');
         const profileConfig = configs[userKey]?.profile || 'friends_light';
         const profile       = PROFILES[profileConfig] || PROFILES.friends_light;
@@ -234,11 +204,6 @@ export default async function handler(req, res) {
         );
         await Promise.race([Promise.allSettled(trackPromises), new Promise(resolve => setTimeout(resolve, 5000))]);
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] 📥 סה"כ סטרימים שנאספו לפני ניקוי: ${allStreams.length}`);
-
-        // ══════════════════════════════════════════
-        // Deduplication
-        // ══════════════════════════════════════════
         const deduplicatedStreams = [];
         for (const stream of allStreams) {
             const sIsCached = isCached(stream);
@@ -257,11 +222,6 @@ export default async function handler(req, res) {
             if (!isDuplicate) deduplicatedStreams.push(stream);
         }
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] 🔄 אחרי dedup: ${deduplicatedStreams.length}`);
-
-        // ══════════════════════════════════════════
-        // פיצול Top-Tier / Fallback לפי פרופיל
-        // ══════════════════════════════════════════
         const topTierStreams = [];
         const fallbackStreams = [];
 
@@ -278,11 +238,6 @@ export default async function handler(req, res) {
             (isTopTier ? topTierStreams : fallbackStreams).push(stream);
         }
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] ✂️ topTier: ${topTierStreams.length} | fallback: ${fallbackStreams.length}`);
-
-        // ══════════════════════════════════════════
-        // הפרדת VIP מה-top-tier
-        // ══════════════════════════════════════════
         const vipStreams      = [];
         const standardStreams = [];
 
@@ -290,20 +245,11 @@ export default async function handler(req, res) {
             (isVIPSource(stream) ? vipStreams : standardStreams).push(stream);
         }
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] ⭐ VIP: ${vipStreams.length} | standard: ${standardStreams.length}`);
-
-        // ══════════════════════════════════════════
-        // בניית הדליים – 8 דליים: 4×2 (cached/uncached)
-        // ══════════════════════════════════════════
         const buckets = {
-            '4k_c':      [],
-            '4k_u':      [],
-            '1080p_c':   [],
-            '1080p_u':   [],
-            '720p_c':    [],
-            '720p_u':    [],
-            'sd_c':      [],
-            'sd_u':      []
+            '4k_c': [], '4k_u': [],
+            '1080p_c': [], '1080p_u': [],
+            '720p_c': [], '720p_u': [],
+            'sd_c': [], 'sd_u': []
         };
 
         for (const s of standardStreams) {
@@ -317,32 +263,28 @@ export default async function handler(req, res) {
         }
 
         for (const key of Object.keys(buckets)) {
+            const isCachedBucket = key.endsWith('_c');
             buckets[key].sort((a, b) => {
                 const qA = getQualityWeight(getTextForAnalysis(a));
                 const qB = getQualityWeight(getTextForAnalysis(b));
                 if (qA !== qB) return qB - qA;
 
-                const seedA = getSeeders(a) ?? 0;
-                const seedB = getSeeders(b) ?? 0;
-                if (seedA !== seedB) return seedB - seedA;
+                // תיקון Seeders: בדלי שהוא Cached (כמו Usenet) אנו מתעלמים מה-Seeders לחלוטין.
+                if (!isCachedBucket) {
+                    const seedA = getSeeders(a) ?? 0;
+                    const seedB = getSeeders(b) ?? 0;
+                    if (seedA !== seedB) return seedB - seedA;
+                }
 
                 return getSizeGB(b) - getSizeGB(a);
             });
         }
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] 🪣 דליים לפני draw: 4k_c=${buckets['4k_c'].length} 4k_u=${buckets['4k_u'].length} 1080p_c=${buckets['1080p_c'].length} 1080p_u=${buckets['1080p_u'].length} 720p_c=${buckets['720p_c'].length} 720p_u=${buckets['720p_u'].length} sd_c=${buckets['sd_c'].length} sd_u=${buckets['sd_u'].length}`);
-
-        // ══════════════════════════════════════════
-        // הגדרת מכסות לפי פרופיל
-        // ══════════════════════════════════════════
         const isBigProfile = (profileConfig === 'everything' || profileConfig === 'friends_heavy');
         const quotas = isBigProfile
             ? { '4k_c': 12, '4k_u': 3, '1080p_c': 6, '1080p_u': 2, '720p_c': 3, '720p_u': 1, 'sd_c': 2, 'sd_u': 1 }
             : { '4k_c':  3, '4k_u': 1, '1080p_c': 3, '1080p_u': 1, '720p_c': 2, '720p_u': 0, 'sd_c': 0, 'sd_u': 0 };
 
-        // ══════════════════════════════════════════
-        // drawWithOverflow – סדר ירושה: C_same → U_same → ירידת רזולוציה
-        // ══════════════════════════════════════════
         const standardResult = [];
 
         function drawWithOverflow(resLevel, qC, qU) {
@@ -370,11 +312,6 @@ export default async function handler(req, res) {
         cascade = drawWithOverflow('720p',  quotas['720p_c']  + cascade, quotas['720p_u']);
         cascade = drawWithOverflow('sd',    quotas['sd_c']    + cascade, quotas['sd_u']);
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] 📊 אחרי draw: standardResult=${standardResult.length} | חורים שנותרו מה-cascade=${cascade}`);
-
-        // ══════════════════════════════════════════
-        // תכנים שנותרו בדליים אחרי החיתוך → fallback
-        // ══════════════════════════════════════════
         for (const key of Object.keys(buckets)) {
             if (buckets[key].length > 0) {
                 fallbackStreams.push(...buckets[key]);
@@ -382,15 +319,10 @@ export default async function handler(req, res) {
             }
         }
 
-        // ══════════════════════════════════════════
-        // Safety Net
-        // ══════════════════════════════════════════
         const standardBudget  = profile.maxResults - vipStreams.length;
         const missingSlots    = standardBudget - standardResult.length;
 
         if (missingSlots > 0 && fallbackStreams.length > 0) {
-            console.log(`[ESAY DIAGNOSTIC - STREAM] 🛡️ Safety Net: חסרים ${missingSlots} מקומות, fallback זמין: ${fallbackStreams.length}`);
-
             fallbackStreams.sort((a, b) => {
                 const rA = getResWeight(a); const rB = getResWeight(b);
                 if (rA !== rB) return rB - rA;
@@ -402,22 +334,21 @@ export default async function handler(req, res) {
                 const cA = isCached(a); const cB = isCached(b);
                 if (cA !== cB) return cA ? -1 : 1;
 
-                return (getSeeders(b) ?? 0) - (getSeeders(a) ?? 0);
+                // תיקון Seeders גם בפולבק
+                if (!cA && !cB) {
+                    const seedA = getSeeders(a) ?? 0;
+                    const seedB = getSeeders(b) ?? 0;
+                    if (seedA !== seedB) return seedB - seedA;
+                }
+
+                return getSizeGB(b) - getSizeGB(a);
             });
 
             standardResult.push(...fallbackStreams.slice(0, missingSlots));
         }
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] ✅ standardResult סופי: ${standardResult.length} | VIP: ${vipStreams.length}`);
-
-        // ══════════════════════════════════════════
-        // שילוב סופי + חיתוך אחד בסוף
-        // ══════════════════════════════════════════
         let finalSliced = [...vipStreams, ...standardResult].slice(0, profile.maxResults);
 
-        // ══════════════════════════════════════════
-        // עיצוב שמות (Label) – עם מספור ייחודי לכל תווית
-        // ══════════════════════════════════════════
         const REGEX_BRACKETS = /\[[^\]]*(torbox|tb\b|rd|ad|pm|cached|real-?debrid|all-?debrid|premiumize|elfhosted|elfcache)[^\]]*\]/gi;
         const REGEX_PARENS   = /\([^)]*(torbox|tb\b|rd|ad|pm|cached|real-?debrid|all-?debrid|premiumize|elfhosted|elfcache)[^)]*\)/gi;
         const REGEX_DOWNLOAD = /\[[^\]]*(download|⬇️)[^\]]*\]/gi;
@@ -433,8 +364,8 @@ export default async function handler(req, res) {
             let cleanName = (stream.name || '').replace(REGEX_BRACKETS, '').replace(REGEX_PARENS, '').replace(REGEX_DOWNLOAD, '');
             cleanName = cleanName.replace(/\n+/g, ' ').replace(/^[\s\-\|]+|[\s\-\|]+$/g, '').replace(/\s{2,}/g, ' ').trim();
 
-            let cleanTitle = (stream.title || '').replace(REGEX_BRACKETS, '').replace(REGEX_PARENS, '').replace(REGEX_DOWNLOAD, '');
-            cleanTitle = cleanTitle.replace(/\n+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+            // תיקון קיבוץ בסטרימיו (Grouping): לא מוחקים תגיות דבריד מהטייטל
+            let cleanTitle = (stream.title || '').replace(REGEX_DOWNLOAD, '').trim();
 
             if (isVip || (stream.url && !stream.infoHash && !hasDebridTag)) {
                 labelCounters.vip += 1;
@@ -447,14 +378,13 @@ export default async function handler(req, res) {
                     labelCounters.uncached += 1;
                     stream.name = cleanName ? `דורש המתנה ואולי כניסה חוזרת #${labelCounters.uncached} | ${cleanName}` : `דורש המתנה ואולי כניסה חוזרת #${labelCounters.uncached}`;
                 }
-                stream.title = cleanTitle;
             }
+            stream.title = cleanTitle;
 
             delete stream._sourceBaseUrl;
             return stream;
         });
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] 🏁 מחזיר ${finalSliced.length} סטרימים ללקוח.`);
         return res.status(200).json({ streams: finalSliced });
 
     } catch (error) {
