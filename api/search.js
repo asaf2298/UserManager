@@ -1,5 +1,17 @@
 import fetch from 'node-fetch';
 
+// פונקציית העזר האחידה למניעת תקיעות ודליפות זיכרון
+async function fetchWithTimeout(url, options, timeoutMs) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+        // עכשיו הניקוי מובטח במאת האחוזים, גם אם הייתה שגיאה!
+        clearTimeout(timeoutId);
+    }
+}
+
 /**
  * שליפת שם באנגלית מ-TMDB באמצעות IMDb ID (tt...)
  */
@@ -11,18 +23,12 @@ async function getEnglishNameFromTMDB(imdbId) {
     }
 
     try {
-        const controller = new AbortController();
-        const timeoutId  = setTimeout(() => controller.abort(), 3000);
-        
-        // TMDB Find API - מוצא סרטים וסדרות לפי מזהה IMDb חיצוני
         const url = `https://api.themoviedb.org/3/find/${imdbId}?api_key=${apiKey}&external_source=imdb_id`;
-        const response = await fetch(url, { signal: controller.signal });
-        clearTimeout(timeoutId);
+        const response = await fetchWithTimeout(url, {}, 3000);
 
         if (!response.ok) return null;
         const data = await response.json();
 
-        // בדיקה האם מדובר בסרט או סדרה
         const movie = data.movie_results?.[0];
         const tvShow = data.tv_results?.[0];
 
@@ -47,10 +53,7 @@ async function getEnglishNameFromTMDB(imdbId) {
  */
 async function getMetaNameFromCinemeta(type, id) {
     try {
-        const controller = new AbortController();
-        const timeoutId  = setTimeout(() => controller.abort(), 2500);
-        const response   = await fetch(`https://v3-cinemeta.strem.io/meta/${type}/${id}.json`, { signal: controller.signal });
-        clearTimeout(timeoutId);
+        const response = await fetchWithTimeout(`https://v3-cinemeta.strem.io/meta/${type}/${id}.json`, {}, 2500);
         if (!response.ok) return null;
         const data = await response.json();
         return data.meta?.name || null;
