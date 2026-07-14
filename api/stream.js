@@ -198,7 +198,6 @@ export default async function handler(req, res) {
 
         console.log(`[ESAY DIAGNOSTIC - STREAM] 📥 סה"כ סטרימים גולמיים שנאספו: ${allStreams.length}`);
 
-        // --- לוג מיוחד לאיתור הקבצים הכבדים ביותר ---
         const sortedByWeightRaw = [...allStreams].sort((a,b) => getSizeGB(b) - getSizeGB(a));
         console.log(`[ESAY DIAGNOSTIC - STREAM] 🏋️‍♂️ 5 הסטרימים הכבדים ביותר שהתקבלו מהתוספים (לפני ניקוי):`);
         sortedByWeightRaw.slice(0, 5).forEach((s, i) => {
@@ -206,7 +205,6 @@ export default async function handler(req, res) {
             console.log(`   --> ${i+1}. המשקל: ${getSizeGB(s).toFixed(2)}GB | Source: ${s.name || 'Unknown'} | Title: ${cleanT}...`);
         });
 
-        // Deduplication - שופר כדי לא למחוק Usenet/Remux איכותיים ללא URL
         const deduplicatedStreams = [];
         for (const stream of allStreams) {
             const sIsCached = isCached(stream);
@@ -215,7 +213,6 @@ export default async function handler(req, res) {
                 if (sIsCached !== isCached(existing)) return false;
                 if (sIsCached) {
                     if (stream.url && existing.url && stream.url === existing.url) return true;
-                    // אם כותרת וגודל כמעט זהים, מדובר בכפילות אגרסיבית שצריך לאחד
                     if (stream.title === existing.title && Math.abs(sSize - getSizeGB(existing)) * 1024 <= 1.0) return true;
                     return false;
                 } else {
@@ -307,7 +304,7 @@ export default async function handler(req, res) {
         const missingSlots    = standardBudget - standardResult.length;
 
         if (missingSlots > 0 && fallbackStreams.length > 0) {
-            console.log(`[ESAY DIAGNOSTIC - STREAM] 🛡️ מפעיל רשת ביטחון: חסרים ${missingSlots} מקומות לטופ ${profile.maxResults}. שואב מתוך ה-${fallbackStreams.length} שב-Fallback.`);
+            console.log(`[ESAY DIAGNOSTIC - STREAM] 🛡️ מפעיל רשת ביטחון: חסרים ${missingSlots} מקומות. שואב תוכן בצורה נאמנה לסדר הרזולוציות של הדליים.`);
             standardResult.push(...fallbackStreams.slice(0, missingSlots));
         }
 
@@ -340,7 +337,6 @@ export default async function handler(req, res) {
         const REGEX_PARENS   = /\([^)]*(torbox|tb\b|rd|ad|pm|cached|real-?debrid|all-?debrid|premiumize|elfhosted|elfcache)[^)]*\)/gi;
         const REGEX_DOWNLOAD = /\[[^\]]*(download|⬇️)[^\]]*\]/gi;
 
-        // מיספור אבסולוטי מ-1 ועד הסוף (ללא פיצול מונים)
         finalSliced = finalSliced.map((stream, index) => {
             const text        = getTextForAnalysis(stream);
             const isVip       = isVIPSource(stream);
