@@ -51,8 +51,13 @@ export default async function handler(req, res) {
 
                 if ((type === 'tv' || type === 'channel')) {
                     const channelName = data.meta.name || id.replace(/_/g, ' ');
-                    data.meta.description = `שידור חי - ${channelName}`;
+                    // אם ה-description המקורי קיים ולא ריק, נשתמש בו, אחרת נשתמש בברירת המחדל
+                    if (!data.meta.description || data.meta.description.trim() === '') {
+                        data.meta.description = `שידור חי - ${channelName}`;
+                    }
+                    // אם הוא קיים, הוא פשוט יישאר כפי שהוא (מהתוסף)
                 }
+                res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
                 return res.status(200).json(data);
             }
         }
