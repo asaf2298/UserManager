@@ -1,5 +1,15 @@
 import fetch from 'node-fetch';
 
+async function fetchWithTimeout(url, options, timeoutMs) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -25,7 +35,6 @@ export default async function handler(req, res) {
 
         const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
         
-        // אנו פונים ל-Kan-Box בנתיב שהוא מכיר (series) כדי לקבל תשובה מלאה
         const forwardType = (type === 'tv' || type === 'channel') ? 'series' : type;
         const targetUrl = `${cleanTvUrl}/meta/${forwardType}/${idWithExt}`;
 
@@ -38,24 +47,19 @@ export default async function handler(req, res) {
             'X-Forwarded-For': clientIp
         };
 
-        const response = await fetch(targetUrl, { headers, timeout: 5000 });
+        const response = await fetchWithTimeout(targetUrl, { headers }, 5000);
 
         if (response.ok) {
             const data = await response.json();
             if (data && data.meta) {
-                // --- תיקון קריטי ---
-                // Stremio מוחק מטא-דאטה (No metadata) אם ה-Type או ה-ID לא תואמים בדיוק
-                // למה שהוא ביקש ב-URL. לכן אנו דורסים חזרה את הערכים לאלו המקוריים!
                 data.meta.type = type; 
                 data.meta.id = id;
 
                 if ((type === 'tv' || type === 'channel')) {
                     const channelName = data.meta.name || id.replace(/_/g, ' ');
-                    // אם ה-description המקורי קיים ולא ריק, נשתמש בו, אחרת נשתמש בברירת המחדל
                     if (!data.meta.description || data.meta.description.trim() === '') {
                         data.meta.description = `שידור חי - ${channelName}`;
                     }
-                    // אם הוא קיים, הוא פשוט יישאר כפי שהוא (מהתוסף)
                 }
                 res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
                 return res.status(200).json(data);
