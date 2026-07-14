@@ -1,5 +1,16 @@
 import fetch from 'node-fetch';
 
+// שילוב פונקציית העזר לאחידות בכל הפרויקט
+async function fetchWithTimeout(url, options, timeoutMs) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
 const ALLOWED_LANGS = new Set([
     'he', 'heb', 'hebrew', 'iw', 'he-il', 'עברית',
     'en', 'eng', 'english', 'en-us', 'en-gb',
@@ -32,8 +43,6 @@ export default async function handler(req, res) {
         if (subtitleUrls.length === 0) return res.status(200).json({ subtitles: [] });
 
         const fetchSubtitleAddon = async (baseUrl) => {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 4650); 
             const cleanBaseUrl = baseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
             const targetUrl = `${cleanBaseUrl}/subtitles/${type}/${id}.json`;
 
@@ -43,13 +52,12 @@ export default async function handler(req, res) {
             };
 
             try {
-                const response = await fetch(targetUrl, { signal: controller.signal, headers });
+                // שימוש במעטפת התיקנית למניעת תקיעות ודליפות
+                const response = await fetchWithTimeout(targetUrl, { headers }, 4650);
                 if (!response.ok) return { subtitles: [] };
                 return await response.json();
             } catch (err) {
                 return { subtitles: [] };
-            } finally {
-                clearTimeout(timeoutId);
             }
         };
 
@@ -68,7 +76,6 @@ export default async function handler(req, res) {
         const uniqueSubsMap = new Map();
         for (const sub of allSubs) {
             const lang = (sub.lang || '').toLowerCase();
-            // תיקון: שימוש ב-URL כמפתח הראשי כדי למנוע דריסת כתוביות עם ID שבור ("1")
             const key = sub.url ? sub.url : `${sub.id}_${lang}`; 
             if (!uniqueSubsMap.has(key)) {
                 uniqueSubsMap.set(key, sub);
