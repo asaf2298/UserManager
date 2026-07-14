@@ -105,13 +105,15 @@ export default async function handler(req, res) {
     const clientIp = forwardedIps ? forwardedIps.split(',')[0].trim() : (req.socket?.remoteAddress || '');
     const clientUA = req.headers['user-agent'] || 'Stremio/4.4.156';
 
-    console.log(`[ESAY DIAGNOSTIC - STREAM] 🟢 בקשת סטרים נכנסת: ${req.url} | Client IP: ${clientIp}`);
+    console.log(`\n[ESAY DIAGNOSTIC - STREAM] 🟢 בקשת סטרים חדשה התקבלה!`);
+    console.log(`[ESAY DIAGNOSTIC - STREAM] 🌐 URL: ${req.url}`);
+    console.log(`[ESAY DIAGNOSTIC - STREAM] 🕵️ Client IP: ${clientIp}`);
 
     try {
         const urlParts  = req.url.split('?')[0].split('/');
         const streamIdx = urlParts.indexOf('stream');
         if (streamIdx < 1 || streamIdx + 2 >= urlParts.length) {
-            console.log(`[ESAY DIAGNOSTIC - STREAM] ❌ מבנה URL לא תקין.`);
+            console.error(`[ESAY DIAGNOSTIC - STREAM] ❌ שגיאה: מבנה URL לא תקין.`);
             return res.status(400).json({ streams: [] });
         }
 
@@ -128,16 +130,16 @@ export default async function handler(req, res) {
             try {
                 const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
                 const targetUrl  = `${cleanTvUrl}/stream/series/${idWithExt}`;
-                console.log(`[ESAY DIAGNOSTIC - LIVE] 🚀 מנתב ערוץ חי אל: ${targetUrl}`);
+                console.log(`[ESAY DIAGNOSTIC - LIVE] 🚀 ניתוב ישיר לערוץ חי: ${targetUrl}`);
                 const headers    = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp, 'Accept': 'application/json, text/plain, */*' };
                 const tvRes      = await fetch(targetUrl, { headers, timeout: 9500 });
                 if (tvRes.ok) {
                     const tvData = await tvRes.json();
-                    console.log(`[ESAY DIAGNOSTIC - LIVE] ✅ התקבלו ${tvData.streams?.length || 0} סטרימים של ערוץ חי.`);
+                    console.log(`[ESAY DIAGNOSTIC - LIVE] ✅ התקבלו ${tvData.streams?.length || 0} סטרימים של ערוץ חי בהצלחה.`);
                     return res.status(200).json(tvData);
                 }
             } catch (e) {
-                console.error('[ESAY DIAGNOSTIC - LIVE] 💥 שגיאה בערוץ חי:', e.message);
+                console.error('[ESAY DIAGNOSTIC - LIVE] 💥 שגיאה בשליפת ערוץ חי:', e.message);
             }
             return res.status(200).json({ streams: [] });
         }
@@ -147,7 +149,7 @@ export default async function handler(req, res) {
         const profile       = PROFILES[profileConfig] || PROFILES.friends_light;
         const addons        = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
         
-        console.log(`[ESAY DIAGNOSTIC - STREAM] 👤 פרופיל: ${profileConfig} | תוספים: ${addons.length}`);
+        console.log(`[ESAY DIAGNOSTIC - STREAM] ⚙️ פרופיל מוגדר: ${profileConfig} | תוספים לפניה: ${addons.length}`);
         if (addons.length === 0) return res.status(200).json({ streams: [] });
 
         const fetchFromAddon = async (baseUrl, customIdWithExt = null) => {
@@ -160,10 +162,7 @@ export default async function handler(req, res) {
             if (baseUrl.includes('kan-box-addon.vercel.app') && (type === 'tv' || type === 'channel')) forwardType = 'series';
             const targetUrl = `${cleanBaseUrl}/stream/${forwardType}/${finalIdWithExt}`;
             
-            const fetchHeaders = { 
-                'User-Agent': clientUA, 
-                'X-Forwarded-For': clientIp
-            };
+            const fetchHeaders = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp };
             
             try {
                 const response = await fetch(targetUrl, { signal: controller.signal, headers: fetchHeaders, timeout: profile.timeoutMs });
@@ -187,7 +186,7 @@ export default async function handler(req, res) {
             const baseId    = id.split(':')[0];
             const movieName = await getMetaName(type, baseId);
             if (movieName) {
-                console.log(`[ESAY DIAGNOSTIC - STREAM] 🔎 מבצע חיפוש טקסטואלי מקביל עבור: ${movieName}`);
+                console.log(`[ESAY DIAGNOSTIC - STREAM] 🔎 מבצע חיפוש טקסטואלי נלווה עבור: "${movieName}"`);
                 const textSearchPromises = addons.map(baseUrl => fetchFromAddon(baseUrl, `search=${encodeURIComponent(movieName)}.json`));
                 promises = promises.concat(textSearchPromises);
             }
@@ -197,8 +196,17 @@ export default async function handler(req, res) {
         const trackPromises = promises.map(p => p.then(val => { if (Array.isArray(val)) allStreams = allStreams.concat(val); return val; }).catch(() => {}));
         await Promise.race([Promise.allSettled(trackPromises), new Promise(resolve => setTimeout(resolve, 5000))]);
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] 📥 סה"כ סטרימים שנאספו לפני ניקוי: ${allStreams.length}`);
+        console.log(`[ESAY DIAGNOSTIC - STREAM] 📥 סה"כ סטרימים גולמיים שנאספו: ${allStreams.length}`);
 
+        // --- לוג מיוחד לאיתור הקבצים הכבדים ביותר ---
+        const sortedByWeightRaw = [...allStreams].sort((a,b) => getSizeGB(b) - getSizeGB(a));
+        console.log(`[ESAY DIAGNOSTIC - STREAM] 🏋️‍♂️ 5 הסטרימים הכבדים ביותר שהתקבלו מהתוספים (לפני ניקוי):`);
+        sortedByWeightRaw.slice(0, 5).forEach((s, i) => {
+            const cleanT = s.title ? s.title.replace(/\n/g, ' ').substring(0, 35) : 'No Title';
+            console.log(`   --> ${i+1}. המשקל: ${getSizeGB(s).toFixed(2)}GB | Source: ${s.name || 'Unknown'} | Title: ${cleanT}...`);
+        });
+
+        // Deduplication - שופר כדי לא למחוק Usenet/Remux איכותיים ללא URL
         const deduplicatedStreams = [];
         for (const stream of allStreams) {
             const sIsCached = isCached(stream);
@@ -206,7 +214,10 @@ export default async function handler(req, res) {
             const isDuplicate = deduplicatedStreams.some(existing => {
                 if (sIsCached !== isCached(existing)) return false;
                 if (sIsCached) {
-                    return stream.url && existing.url && stream.url === existing.url;
+                    if (stream.url && existing.url && stream.url === existing.url) return true;
+                    // אם כותרת וגודל כמעט זהים, מדובר בכפילות אגרסיבית שצריך לאחד
+                    if (stream.title === existing.title && Math.abs(sSize - getSizeGB(existing)) * 1024 <= 1.0) return true;
+                    return false;
                 } else {
                     if (stream.infoHash && existing.infoHash && stream.infoHash === existing.infoHash && stream.title === existing.title) {
                         return Math.abs(sSize - getSizeGB(existing)) * 1024 <= 1.0;
@@ -217,7 +228,7 @@ export default async function handler(req, res) {
             if (!isDuplicate) deduplicatedStreams.push(stream);
         }
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] 🔄 אחרי deduplication (ניקוי כפילויות): ${deduplicatedStreams.length}`);
+        console.log(`[ESAY DIAGNOSTIC - STREAM] 🔄 אחרי Deduplication (מחיקת כפילויות): נותרו ${deduplicatedStreams.length} סטרימים יחודיים.`);
 
         const topTierStreams = [];
         const fallbackStreams = [];
@@ -234,7 +245,7 @@ export default async function handler(req, res) {
             (isTopTier ? topTierStreams : fallbackStreams).push(stream);
         }
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] ✂️ חלוקה ראשונית: Top-Tier מכיל ${topTierStreams.length} | Fallback מכיל ${fallbackStreams.length}`);
+        console.log(`[ESAY DIAGNOSTIC - STREAM] ✂️ סינון פרופיל: נכנסו ל-Top Tier: ${topTierStreams.length} | נפלו ל-Fallback: ${fallbackStreams.length}`);
 
         const vipStreams      = [];
         const standardStreams = [];
@@ -242,7 +253,7 @@ export default async function handler(req, res) {
             (isVIPSource(stream) ? vipStreams : standardStreams).push(stream);
         }
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] ⭐ זוהו ${vipStreams.length} סטרימים מועדפים (VIP). סטנדרטיים: ${standardStreams.length}`);
+        console.log(`[ESAY DIAGNOSTIC - STREAM] ⭐ סיווג VIP (מרשת דפדפן): נמצאו ${vipStreams.length}. רגילים: ${standardStreams.length}`);
 
         const buckets = { '4k_c': [], '4k_u': [], '1080p_c': [], '1080p_u': [], '720p_c': [], '720p_u': [], 'sd_c': [], 'sd_u': [] };
 
@@ -254,7 +265,7 @@ export default async function handler(req, res) {
             else buckets[`sd${sfx}`].push(s);
         }
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] 🪣 פריסה לדליים: 4k_c=${buckets['4k_c'].length}, 4k_u=${buckets['4k_u'].length}, 1080p_c=${buckets['1080p_c'].length}, 1080p_u=${buckets['1080p_u'].length}`);
+        console.log(`[ESAY DIAGNOSTIC - STREAM] 🪣 מצב דליים: 4k_c(${buckets['4k_c'].length}), 4k_u(${buckets['4k_u'].length}), 1080p_c(${buckets['1080p_c'].length}), 1080p_u(${buckets['1080p_u'].length})`);
 
         const isBigProfile = (profileConfig === 'everything' || profileConfig === 'friends_heavy');
         const quotas = isBigProfile
@@ -286,7 +297,7 @@ export default async function handler(req, res) {
         cascade = drawWithOverflow('720p', quotas['720p_c'] + cascade, quotas['720p_u']);
         cascade = drawWithOverflow('sd', quotas['sd_c'] + cascade, quotas['sd_u']);
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] 📊 אחרי draw: המערכת אספה ${standardResult.length} סטרימים לפי המכסות. (Cascade: ${cascade})`);
+        console.log(`[ESAY DIAGNOSTIC - STREAM] 📊 נשאבו ${standardResult.length} סטרימים לפי חוקי המכסות. (חורים שנגררו: ${cascade})`);
 
         for (const key of Object.keys(buckets)) {
             if (buckets[key].length > 0) fallbackStreams.push(...buckets[key]);
@@ -296,13 +307,13 @@ export default async function handler(req, res) {
         const missingSlots    = standardBudget - standardResult.length;
 
         if (missingSlots > 0 && fallbackStreams.length > 0) {
-            console.log(`[ESAY DIAGNOSTIC - STREAM] 🛡️ רשת ביטחון: חסרים ${missingSlots} מקומות. שואב מתוך ${fallbackStreams.length} שב-Fallback.`);
+            console.log(`[ESAY DIAGNOSTIC - STREAM] 🛡️ מפעיל רשת ביטחון: חסרים ${missingSlots} מקומות לטופ ${profile.maxResults}. שואב מתוך ה-${fallbackStreams.length} שב-Fallback.`);
             standardResult.push(...fallbackStreams.slice(0, missingSlots));
         }
 
         let finalSliced = [...vipStreams, ...standardResult].slice(0, profile.maxResults);
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] ⚖️ מבצע מיון אבסולוטי (Absolute Sort) על ${finalSliced.length} תוצאות סופיות.`);
+        console.log(`[ESAY DIAGNOSTIC - STREAM] ⚖️ מבצע מיון אבסולוטי ואחרון לפני שילוח על ${finalSliced.length} תוצאות סופיות.`);
         
         finalSliced.sort((a, b) => {
             const vipA = isVIPSource(a); const vipB = isVIPSource(b);
@@ -329,6 +340,7 @@ export default async function handler(req, res) {
         const REGEX_PARENS   = /\([^)]*(torbox|tb\b|rd|ad|pm|cached|real-?debrid|all-?debrid|premiumize|elfhosted|elfcache)[^)]*\)/gi;
         const REGEX_DOWNLOAD = /\[[^\]]*(download|⬇️)[^\]]*\]/gi;
 
+        // מיספור אבסולוטי מ-1 ועד הסוף (ללא פיצול מונים)
         finalSliced = finalSliced.map((stream, index) => {
             const text        = getTextForAnalysis(stream);
             const isVip       = isVIPSource(stream);
@@ -348,7 +360,7 @@ export default async function handler(req, res) {
             return stream;
         });
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] 🏁 סיום מוצלח. מחזיר רשימה ממוינת וממוספרת (1 עד ${finalSliced.length}) ללקוח.`);
+        console.log(`[ESAY DIAGNOSTIC - STREAM] 🏁 סיום מוצלח. נשלחו ${finalSliced.length} סטרימים ללקוח!`);
         return res.status(200).json({ streams: finalSliced });
     } catch (error) { 
         console.error('[ESAY DIAGNOSTIC - STREAM] 💥 שגיאת קריסה כללית ב-Proxy:', error.stack || error);
