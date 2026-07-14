@@ -1,5 +1,16 @@
 import fetch from 'node-fetch';
 
+// פונקציית עזר להגנת טיימאאוט מלאה
+async function fetchWithTimeout(url, options, timeoutMs) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
 let cachedTvCatalogIds = null;
 let lastCacheTime = 0;
 
@@ -9,7 +20,7 @@ async function getTvCatalogIds(tvAddonUrl) {
         return cachedTvCatalogIds;
     }
     try {
-        const res = await fetch(`${tvAddonUrl}/manifest.json`, { timeout: 4000 });
+        const res = await fetchWithTimeout(`${tvAddonUrl}/manifest.json`, {}, 4000);
         if (!res.ok) return [];
         const manifest = await res.json();
         cachedTvCatalogIds = manifest.catalogs?.map(c => c.id) || [];
@@ -22,7 +33,7 @@ async function getTvCatalogIds(tvAddonUrl) {
 
 async function getSearchCatalogId(baseUrl, type) {
     try {
-        const res = await fetch(`${baseUrl}/manifest.json`, { timeout: 4000 });
+        const res = await fetchWithTimeout(`${baseUrl}/manifest.json`, {}, 4000);
         if (!res.ok) return null;
         const manifest = await res.json();
         const cat = manifest.catalogs?.find(c => c.type === type && c.extra?.some(e => e.name === 'search'));
@@ -66,11 +77,11 @@ export default async function handler(req, res) {
 
             const searchPromises = [];
             if (tvSearchId) {
-                searchPromises.push(fetch(`${tvAddonUrl}/catalog/${type}/${tvSearchId}/${extraPart}`, { timeout: 5000 }).then(r => r.ok ? r.json() : { metas: [] }).catch(() => ({ metas: [] })));
+                searchPromises.push(fetchWithTimeout(`${tvAddonUrl}/catalog/${type}/${tvSearchId}/${extraPart}`, {}, 5000).then(r => r.ok ? r.json() : { metas: [] }).catch(() => ({ metas: [] })));
             }
             if (aioSearchId) {
                 console.log(`[ESAY CATALOG] 🚀 מבקש מ-AIO SEARCH: ${catalogBaseUrl}/catalog/${type}/${aioSearchId}/${extraPart}`);
-                searchPromises.push(fetch(`${catalogBaseUrl}/catalog/${type}/${aioSearchId}/${extraPart}`, { timeout: 5000 }).then(r => r.ok ? r.json() : { metas: [] }).catch(() => ({ metas: [] })));
+                searchPromises.push(fetchWithTimeout(`${catalogBaseUrl}/catalog/${type}/${aioSearchId}/${extraPart}`, {}, 5000).then(r => r.ok ? r.json() : { metas: [] }).catch(() => ({ metas: [] })));
             }
 
             const results = await Promise.all(searchPromises);
@@ -104,7 +115,7 @@ export default async function handler(req, res) {
         }
 
         console.log(`[ESAY CATALOG] 🚀 מנתב קטלוג רגיל ל: ${targetUrl}`);
-        const fetchRes = await fetch(targetUrl, { timeout: 6000 });
+        const fetchRes = await fetchWithTimeout(targetUrl, {}, 6000);
         if (!fetchRes.ok) throw new Error(`HTTP ${fetchRes.status}`);
         
         const data = await fetchRes.json();
