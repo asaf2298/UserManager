@@ -479,8 +479,17 @@ export default async function handler(req, res) {
             return getSizeGB(b) - getSizeGB(a); // גיבוי אחרון בהחלט
         });
 
+        // חומת מגן: סינון קריטי של ערכים פגומים או ריקים
+        // מוודא שלכל הסטרימים יש באמת נתיב ניגון חוקי לפני שהם תופסים מקום במכסה
+        finalCandidates = finalCandidates.filter(stream => {
+            if (!stream) return false;
+            // סטרימיו חייב לפחות אחד מהפרמטרים הבאים כדי שהכפתור יעבוד ולא ידלג עליו
+            const hasPlayableLink = stream.url || stream.infoHash || stream.externalUrl;
+            return hasPlayableLink;
+        });
+        // עכשיו חותכים את ה-30 הבטוחים והתקינים ב-100%
         let finalSliced = finalCandidates.slice(0, profile.maxResults);
-
+        
         finalSliced = finalSliced.map((stream, index) => {
             const isVip       = isVIPSource(stream);
             const isC         = isCached(stream);
