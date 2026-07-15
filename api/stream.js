@@ -225,6 +225,15 @@ function isDirectWebStream(stream) {
              !isUsenet(stream) && 
              !stream.infoHash);
 }
+
+function isWebFriendly(stream) {
+    if (stream._isWebFriendly !== undefined) return stream._isWebFriendly;
+    const text = getTextForAnalysis(stream);
+    // זיהוי קידודים בעייתיים (HEVC, 10bit, x265) שבדרך כלל קורסים בדפדפנים
+    const isHeavy = /\b(hevc|x265|h265|10bit)\b/i.test(text);
+    stream._isWebFriendly = !isHeavy;
+    return stream._isWebFriendly;
+}
 // ==========================================
 // ה-Handler המרכזי 
 // ==========================================
@@ -282,6 +291,7 @@ export default async function handler(req, res) {
         const configs       = JSON.parse(process.env.USER_CONFIGS || '{}');
         const profileConfig = configs[userKey]?.profile || 'friends_light';
         const profile       = PROFILES[profileConfig] || PROFILES.friends_light;
+        const isStrictWeb = (profileConfig === 'family' || profileConfig === 'friends_light'); // סינון תוכן קשוח לניגון
         const addons        = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
         
         if (addons.length === 0) return res.status(200).json({ streams: [] });
@@ -475,7 +485,7 @@ export default async function handler(req, res) {
         finalCandidates.sort((a, b) => {
             const vipA = isVIPSource(a); const vipB = isVIPSource(b);
             if (vipA !== vipB) return vipA ? -1 : 1;
-
+            
             const rA = getResWeight(a); const rB = getResWeight(b);
             if (rA !== rB) return rB - rA;
 
@@ -575,8 +585,8 @@ export default async function handler(req, res) {
         // שימוש במשתנה חדש וסופי שמרכז את הכל
         let finalSliced = [...combinedStandardAndUncached, ...reservedDirectWeb];
 
-        // -----------------------------------------------------------------------------
-        // 4. עיצוב השמות (Map) וניקוי זיכרון למניעת עומס
+       // -----------------------------------------------------------------------------
+        // 4. עיצוב השמות (Map) וניקוי זיכרון וניטרול הגבלות צד-לקוח של סטרימיו
         // -----------------------------------------------------------------------------
         finalSliced = finalSliced.map((stream, index) => {
             const isVip       = isVIPSource(stream);
@@ -586,16 +596,33 @@ export default async function handler(req, res) {
 
             let cleanName = (stream.name || '').replace(REGEX_BRACKETS, '').replace(REGEX_PARENS, '').replace(REGEX_DOWNLOAD, '');
             cleanName = cleanName.replace(/\n+/g, ' ').replace(/^[\s\-\|]+|[\s\-\|]+$/g, '').replace(/\s{2,}/g, ' ').trim();
-            // משיכת כותרת מכל שדה זמין כדי למנוע העלמה על ידי סטרימיו
+            
+            // משיכת כותרת מכל שדה זמין כדי למנוע העלמה על ידי סטרימיו עקב שדות ריקים
             let rawTitle = stream.title || stream.description || stream.behaviorHints?.filename || '';
             let cleanTitle = rawTitle.replace(REGEX_DOWNLOAD, '').replace(/\n+/g, '\n').trim();
             if (!cleanTitle) cleanTitle = cleanName || 'תוצאה ללא כותרת מהמקור';
 
+            // בניית תחילית עם אזהרת תאימות לקבצים "כבדים"
             let prefix = (isVip || isDirectWeb) ? 'מרשת דפדפן' : (isC ? 'זמין לצפייה' : 'דורש המתנה ואולי כניסה חוזרת');
+            
+            if (!isWebFriendly(stream)) {
+                prefix = '⚠️ לנגן טלוויזיה/חיצוני | ' + prefix;
+            }
             
             stream.name = `[#${position}] ${prefix} | ${cleanName}`;
             stream.title = `[#${position}]\n${cleanTitle}`;
 
+            // --- מנטרל הגבלות פנימיות של ממשק סטרימיו ---
+            if (stream.behaviorHints) {
+                // מונע מסטרימיו להעלים קבצי MKV בגרסאות ווב או במכשירים חלשים
+                delete stream.behaviorHints.notWebReady; 
+                // מונע מסטרימיו לקבץ ולהסתיר תוצאות דומות שמגיעות מאותו מקור
+                delete stream.behaviorHints.bingeGroup;  
+            }
+            // מחיקת התיאור המקורי למקרה שסטרימיו משתמש בו לסינון כפילויות
+            delete stream.description; 
+
+            // ניקוי המשתנים הפנימיים שלנו
             const keysToDelete = [
                 '_sourceBaseUrl', '_text', '_sizeGB', '_isCached', '_isUsenet', 
                 '_isVip', '_seeders', '_resWeight', '_qualityWeight', 
