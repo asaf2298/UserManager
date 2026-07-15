@@ -47,7 +47,7 @@ export default async function handler(req, res) {
                         firstKanboxCatalog = catalogs[0];
                         
                         // לוקחים את שאר הקטלוגים אבל חותכים החוצה את 2 האחרונים ברשימה
-                        const remainingCatalogs = catalogs.slice(1, -2);
+                        const remainingCatalogs = catalogs.slice(1);
                         
                         restKanboxCatalogs = remainingCatalogs.map(cat => ({
                             ...cat,
