@@ -11,6 +11,8 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 }
 
 export default async function handler(req, res) {
+    // מניעת שגיאת קאש של תוכן לייב בצד Vercel
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -61,7 +63,6 @@ export default async function handler(req, res) {
                         data.meta.description = `שידור חי - ${channelName}`;
                     }
                 }
-                res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
                 return res.status(200).json(data);
             }
         }
