@@ -5,6 +5,8 @@
     { "source": "/:user/catalog/:type/:id/:extra*.json", "destination": "/api/catalog" },
     { "source": "/:user/catalog/:type/:id", "destination": "/api/catalog" },
     { "source": "/:user/catalog/:type/:id/:extra*", "destination": "/api/catalog" },
+    { "source": "/:user/meta/:type/:id.json", "destination": "/api/meta" },
+    { "source": "/:user/meta/:type/:id", "destination": "/api/meta" },
     { "source": "/:user/stream/:type/:id.json", "destination": "/api/stream" },
     { "source": "/:user/stream/:type/:id", "destination": "/api/stream" },
     { "source": "/:user/subtitles/:type/:id.json", "destination": "/api/subtitles" },
