@@ -177,7 +177,7 @@ function getAudioWeight(stream) {
     if (stream._audioWeight !== undefined) return stream._audioWeight;
     const text = getTextForAnalysis(stream);
     let score = 1;
-    if (/\b(atmos|truehd|dts-hd|dtsx|dts-x)\b/i.test(text)) score = 3;
+    if (/\b(atmos|eac3?|flac|truehd|dts-hd|dtsx)\b/i.test(text) || /\bdts[\s.-]?x\b/i.test(text)) score = 3;
     else if (/\b(dd5\.1|dd\+5\.1|5\.1|7\.1|aac5\.1)\b/i.test(text)) score = 2;
     stream._audioWeight = score;
     return score;
@@ -196,7 +196,7 @@ function getQualityScoreForPreSort(stream) {
     const weightTier = stream._weightTier || 0;
     return (getResWeight(stream) * 1000) + 
            (getQualityWeight(stream) * 100) + 
-           (weightTier * 10) +
+           (weightTier * 100) +
            (getVisualWeight(stream) * 10) + 
            getAudioWeight(stream);
 }
@@ -325,17 +325,28 @@ export default async function handler(req, res) {
         for (const stream of allStreams) {
             const sIsCached = isCached(stream);
             const sSize     = getSizeGB(stream);
+            const sSeeders  = getSeeders(stream);
             const isDuplicate = deduplicatedStreams.some(existing => {
-                if (sIsCached !== isCached(existing)) return false;
-                if (sIsCached) {
-                    if (stream.url && existing.url && stream.url === existing.url) return true;
-                    if (stream.title === existing.title && Math.abs(sSize - getSizeGB(existing)) * 1024 <= 1.0) return true;
-                    return false;
-                } else {
-                    if (stream.infoHash && existing.infoHash && stream.infoHash === existing.infoHash && stream.title === existing.title) {
-                        return Math.abs(sSize - getSizeGB(existing)) * 1024 <= 1.0;
-                    }
+                if (sIsCached !== isCached(existing)) return false;    
+                // 1. זיהוי URL זהה (לרוב קבצי דבריד מדויקים)
+                if (stream.url && existing.url && stream.url === existing.url) return true;    
+                // 2. זיהוי InfoHash זהה עם סטיית גודל קלה
+                if (stream.infoHash && existing.infoHash && stream.infoHash === existing.infoHash) {
+                    if (Math.abs(sSize - getSizeGB(existing)) * 1024 <= 5.0) return true;
                 }
+                // 3. כפילות קלאסית (שם זהה לחלוטין + משקל דומה)
+                if (stream.title === existing.title && Math.abs(sSize - getSizeGB(existing)) * 1024 <= 1.0) return true;
+
+                // 4. חומת אש נגד PACK/SPAM (כמו המקרה של Feibanyama)
+                // אם יש להם אותם סידרים, אותה רזולוציה, וההתחלה של השם זהה לחלוטין
+                const eSeeders = getSeeders(existing);
+                if (sSeeders !== null && sSeeders === eSeeders && sSeeders > 0) {
+                    const t1 = (stream.title || '').trim().substring(0, 25);
+                    const t2 = (existing.title || '').trim().substring(0, 25);
+                    if (t1 && t1 === t2 && getResWeight(stream) === getResWeight(existing)) {
+                        return true;
+                    }
+                } 
                 return false;
             });
             if (!isDuplicate) deduplicatedStreams.push(stream);
@@ -409,12 +420,11 @@ export default async function handler(req, res) {
             }
             return missing;
         }
-
         drawWithOverflow('4k', quotas['4k_c'], quotas['4k_u']);
         drawWithOverflow('1080p', quotas['1080p_c'], quotas['1080p_u']);
         drawWithOverflow('720p', quotas['720p_c'], quotas['720p_u']);
         drawWithOverflow('sd', quotas['sd_c'], quotas['sd_u']);
-
+        
         const quotaOverflow = [];
         for (const key of Object.keys(buckets)) {
             if (buckets[key].length > 0) quotaOverflow.push(...buckets[key]);
@@ -433,8 +443,8 @@ export default async function handler(req, res) {
         if (missingSlots > 0 && qualityRejected.length > 0) {
             finalCandidates.push(...qualityRejected.slice(0, missingSlots));
         }
-
         // המיון הסופי עכשיו רץ באלפיות השנייה - הכל כבר חושב ונמצא בזיכרון!
+        // המיון הסופי עם העדפת משקל מוחלטת בתוך אותה רזולוציה!
         finalCandidates.sort((a, b) => {
             const vipA = isVIPSource(a); const vipB = isVIPSource(b);
             if (vipA !== vipB) return vipA ? -1 : 1;
@@ -443,10 +453,15 @@ export default async function handler(req, res) {
             if (rA !== rB) return rB - rA;
 
             const cA = isCached(a); const cB = isCached(b);
-            if (cA !== cB) return cA ? -1 : 1;
+            if (cA !== cB) return cA ? -1 : 1; // כאן Cached תמיד ינצח Uncached בתוך אותה רזולוציה!
 
             const qA = getQualityWeight(a); const qB = getQualityWeight(b);
             if (qA !== qB) return qB - qA;
+
+            // התיקון הגדול: דירוג המשקל (WeightTier) שולט כעת! קובץ כבד תמיד יעקוף קובץ קל
+            const wA = a._weightTier ?? 0;
+            const wB = b._weightTier ?? 0;
+            if (wA !== wB) return wB - wA;
 
             const vA = getVisualWeight(a); const vB = getVisualWeight(b);
             if (vA !== vB) return vB - vA;
@@ -457,10 +472,11 @@ export default async function handler(req, res) {
             const lA = getLanguageWeight(a); const lB = getLanguageWeight(b);
             if (lA !== lB) return lB - lA;
 
+            // הסידרים הודחו לתחתית - הם יקבעו רק אם שני קבצים זהים לחלוטין גם במשקל וגם באיכות
             const sA = getSeeders(a) ?? 0; const sB = getSeeders(b) ?? 0;
             if (sA !== sB) return sB - sA;
 
-            return getSizeGB(b) - getSizeGB(a);
+            return getSizeGB(b) - getSizeGB(a); // גיבוי אחרון בהחלט של גודל מדויק
         });
 
         let finalSliced = finalCandidates.slice(0, profile.maxResults);
