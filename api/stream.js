@@ -69,12 +69,50 @@ function getSeeders(stream) {
 }
 
 function getSizeGB(stream) {
-    if (stream.behaviorHints?.videoSize) return stream.behaviorHints.videoSize / (1024 ** 3);
-    if (stream.size) return stream.size / (1024 ** 3);
-    const match = getTextForAnalysis(stream).match(REGEX_SIZE);
-    if (!match) return 0;
-    const val = parseFloat(match[1].replace(',', '.')); // תמיכה בפסיק עשרוני אירופאי
-    return match[2].toUpperCase() === 'MB' ? val / 1024 : val;
+    // אם כבר חישבנו את הגודל בעבר, נחזיר אותו מיד מהזיכרון
+    if (stream._sizeGB !== undefined) return stream._sizeGB;
+    let size = 0;
+    if (stream.behaviorHints?.videoSize) {
+        size = stream.behaviorHints.videoSize / (1024 ** 3);
+    } else if (stream.size) {
+        size = stream.size / (1024 ** 3);
+    } else {
+        const match = getTextForAnalysis(stream).match(REGEX_SIZE);
+        if (match) {
+            const val = parseFloat(match[1].replace(',', '.'));
+            size = match[2].toUpperCase() === 'MB' ? val / 1024 : val;
+        }
+    }
+    // שמירת הערך על גבי האובייקט (Memoization)
+    stream._sizeGB = size;
+    return size;
+}
+
+/**
+ * מחלקת את הקבצים ל-4 דרגות משקל (0-3) באופן יחסי ב-$O(N)$
+ */
+function getWeightTiers(streams) {
+    if (!streams || streams.length === 0) return;    
+    let minSize = Infinity;
+    let maxSize = -Infinity;
+    const len = streams.length;
+    // פעימה 1: מציאת מינימום ומקסימום במעבר יחיד (החישוב של getSizeGB נשמר בזיכרון כאן)
+    for (let i = 0; i < len; i++) {
+        const size = getSizeGB(streams[i]);
+        if (size < minSize) minSize = size;
+        if (size > maxSize) maxSize = size;
+    }    
+    const range = maxSize - minSize;
+    // פעימה 2: קביעת הדרגה לכל סרט על בסיס הערך השמור
+    for (let i = 0; i < len; i++) {
+        const s = streams[i];
+        if (range === 0) {
+            s._weightTier = 0;
+        } else {
+            const normalized = (s._sizeGB - minSize) / range;
+            s._weightTier = Math.floor(normalized * 3.99); // הופך ל-0, 1, 2, או 3
+        }
+    }
 }
 
 function getQualityWeight(text) {
@@ -126,9 +164,11 @@ function getLanguageWeight(text) {
 }
 
 function getQualityScoreForPreSort(s) {
+    const weightTier = s._weightTier || 0
     const text = getTextForAnalysis(s);
     return (getResWeight(s) * 1000) + 
            (getQualityWeight(text) * 100) + 
+           (weightTier * 10) +
            (getVisualWeight(text) * 10) + 
            getAudioWeight(text);
 }
