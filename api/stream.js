@@ -13,7 +13,6 @@ const MAX_VIP_SLOTS = 6;
 const REGEX_SIZE    = /(\d+(?:[\.,]\d+)?)\s*(GB|MB)/i;
 const REGEX_SEEDERS = /(?:👤|seeders?:?)\s*(\d+)/i;
 
-// Regex גלובלי לניקוי וזיהוי (מונע בנייה מחדש בכל ריצה)
 const REGEX_BRACKETS = /\[[^\]]*\b(torbox|tb|rd\+?|ad\+?|pm|cached|real-?debrid|all-?debrid|premiumize|elfhosted|elfcache|comet)\b[^\]]*\]/gi;
 const REGEX_PARENS   = /\([^)]*\b(torbox|tb|rd\+?|ad\+?|pm|cached|real-?debrid|all-?debrid|premiumize|elfhosted|elfcache|comet)\b[^)]*\)/gi;
 const REGEX_DOWNLOAD = /\[[^\]]*(download|⬇️)[^\]]*\]/gi;
@@ -25,51 +24,65 @@ const RES_WEIGHT_MAP = {
     '480p': 1, 'sd': 1,
 };
 
+// ==========================================
+// פונקציות עזר מבוססות Memoization לביצועים 
+// ==========================================
+
 function getTextForAnalysis(stream) {
-    return ((stream.name || '') + ' ' + (stream.title || '') + ' ' + (stream.description || '')).toLowerCase();
+    if (stream._text !== undefined) return stream._text;
+    stream._text = ((stream.name || '') + ' ' + (stream.title || '') + ' ' + (stream.description || '')).toLowerCase();
+    return stream._text;
 }
 
 function checkCacheKeywords(text) {
-    // מילים מובהקות שיכולות להופיע בכל מקום
     const isStrongDebrid = /torbox|elfhosted|elfcache|all-?debrid|real-?debrid|premiumize|debrid-?link|stremthru|\bcached\b/i.test(text);
-    // קיצורים או שמות גנריים מחייבים הופעה בתוך סוגריים (למנוע באג של סרט בשם Comet או משקל 2TB)
     const hasBracketDebrid = /[\(\[][^\)\]]*\b(tb|rd\+?|ad\+?|pm|comet)\b[^\)\]]*[\)\]]/i.test(text);
     return isStrongDebrid || hasBracketDebrid;
 }
 
 function isUsenet(stream) {
+    if (stream._isUsenet !== undefined) return stream._isUsenet;
     const text = getTextForAnalysis(stream);
-    return text.includes('usenet') || text.includes('nzb');
+    stream._isUsenet = text.includes('usenet') || text.includes('nzb');
+    return stream._isUsenet;
 }
 
 function isCached(stream) {
+    if (stream._isCached !== undefined) return stream._isCached;
     const text = getTextForAnalysis(stream);
-    if (text.includes('download') || text.includes('⬇️')) return false;
+    let res = false;
     
-    const hasCacheKeywords = checkCacheKeywords(text);
+    if (text.includes('download') || text.includes('⬇️')) {
+        res = false;
+    } else {
+        const hasCacheKeywords = checkCacheKeywords(text);
+        if (isUsenet(stream)) res = hasCacheKeywords;
+        else if (hasCacheKeywords) res = true;
+        else if (stream.infoHash) res = false;
+        else if (stream.url && (stream.url.startsWith('magnet:') || stream.url.toLowerCase().endsWith('.torrent') || stream.url.toLowerCase().endsWith('.nzb'))) res = false;
+        else if (!stream.url) res = false;
+        else if (stream.url.startsWith('http') || stream.url.startsWith('acestream')) res = true;
+    }
     
-    if (isUsenet(stream)) return hasCacheKeywords;
-    if (hasCacheKeywords) return true;
-    if (stream.infoHash) return false;
-    if (stream.url && (stream.url.startsWith('magnet:') || stream.url.toLowerCase().endsWith('.torrent') || stream.url.toLowerCase().endsWith('.nzb'))) return false;
-    
-    if (!stream.url) return false;
-    if (stream.url.startsWith('http') || stream.url.startsWith('acestream')) return true;
-    return false;
+    stream._isCached = res;
+    return res;
 }
 
 function isVIPSource(stream) {
+    if (stream._isVip !== undefined) return stream._isVip;
     const sourceUrl = (stream._sourceBaseUrl || '').toLowerCase();
-    return sourceUrl.includes('kan-box-addon.vercel.app') || sourceUrl.includes('animeil');
+    stream._isVip = sourceUrl.includes('kan-box-addon.vercel.app') || sourceUrl.includes('animeil');
+    return stream._isVip;
 }
 
 function getSeeders(stream) {
+    if (stream._seeders !== undefined) return stream._seeders;
     const match = getTextForAnalysis(stream).match(REGEX_SEEDERS);
-    return match ? parseInt(match[1], 10) : null;
+    stream._seeders = match ? parseInt(match[1], 10) : null;
+    return stream._seeders;
 }
 
 function getSizeGB(stream) {
-    // אם כבר חישבנו את הגודל בעבר, נחזיר אותו מיד מהזיכרון
     if (stream._sizeGB !== undefined) return stream._sizeGB;
     let size = 0;
     if (stream.behaviorHints?.videoSize) {
@@ -83,48 +96,51 @@ function getSizeGB(stream) {
             size = match[2].toUpperCase() === 'MB' ? val / 1024 : val;
         }
     }
-    // שמירת הערך על גבי האובייקט (Memoization)
     stream._sizeGB = size;
     return size;
 }
 
-/**
- * מחלקת את הקבצים ל-4 דרגות משקל (0-3) באופן יחסי ב-$O(N)$
- */
 function getWeightTiers(streams) {
     if (!streams || streams.length === 0) return;    
     let minSize = Infinity;
     let maxSize = -Infinity;
     const len = streams.length;
-    // פעימה 1: מציאת מינימום ומקסימום במעבר יחיד (החישוב של getSizeGB נשמר בזיכרון כאן)
     for (let i = 0; i < len; i++) {
         const size = getSizeGB(streams[i]);
         if (size < minSize) minSize = size;
         if (size > maxSize) maxSize = size;
     }    
     const range = maxSize - minSize;
-    // פעימה 2: קביעת הדרגה לכל סרט על בסיס הערך השמור
     for (let i = 0; i < len; i++) {
         const s = streams[i];
         if (range === 0) {
             s._weightTier = 0;
         } else {
             const normalized = (s._sizeGB - minSize) / range;
-            s._weightTier = Math.floor(normalized * 3.99); // הופך ל-0, 1, 2, או 3
+            s._weightTier = Math.floor(normalized * 3.99);
         }
     }
 }
 
-function getQualityWeight(text) {
-    if (text.includes('remux')) return 4;
-    if (text.includes('bluray') || text.includes('bdrip') || text.includes('brrip')) return 3;
-    if (text.includes('web-dl') || text.includes('webrip') || text.includes('web')) return 2;
-    if (text.includes('hdtv') || text.includes('tvrip')) return 1;
-    return 0;
+function getQualityWeight(stream) {
+    if (stream._qualityWeight !== undefined) return stream._qualityWeight;
+    const text = getTextForAnalysis(stream);
+    let score = 0;
+    if (text.includes('remux')) score = 4;
+    else if (text.includes('bluray') || text.includes('bdrip') || text.includes('brrip')) score = 3;
+    else if (text.includes('web-dl') || text.includes('webrip') || text.includes('web')) score = 2;
+    else if (text.includes('hdtv') || text.includes('tvrip')) score = 1;
+    stream._qualityWeight = score;
+    return score;
 }
 
 function getResWeight(stream) {
-    if (isVIPSource(stream) || stream.behaviorHints?.bingeGroup === 'live-tv') return 3;
+    if (stream._resWeight !== undefined) return stream._resWeight;
+    if (isVIPSource(stream) || stream.behaviorHints?.bingeGroup === 'live-tv') {
+        stream._resWeight = 3;
+        return 3;
+    }
+    
     const rawText = getTextForAnalysis(stream);
     let match;
     const found = [];
@@ -134,44 +150,60 @@ function getResWeight(stream) {
         found.push(match[1].toLowerCase());
     }
     
+    let weight = 0;
     if (found.length === 0) {
-        if (rawText.includes('remux') || rawText.includes('bluray')) return 3;
-        return 0; 
+        if (rawText.includes('remux') || rawText.includes('bluray')) weight = 3;
+    } else {
+        const weights = [...new Set(found.map(tag => RES_WEIGHT_MAP[tag]))];
+        weight = weights.length === 1 ? weights[0] : Math.max(...weights);
     }
-    const weights = [...new Set(found.map(tag => RES_WEIGHT_MAP[tag]))];
-    if (weights.length === 1) return weights[0];
-    return Math.max(...weights);
+    
+    stream._resWeight = weight;
+    return weight;
 }
 
-function getVisualWeight(text) {
+function getVisualWeight(stream) {
+    if (stream._visualWeight !== undefined) return stream._visualWeight;
+    const text = getTextForAnalysis(stream);
     let score = 0;
     if (/\b(dv|dovi|dolby vision|hdr|hdr10|hdr10\+)\b/i.test(text)) score += 2;
     if (/\b(hevc|x265|h265)\b/i.test(text)) score += 1;
     if (/\b10bit\b/i.test(text)) score += 1;
+    stream._visualWeight = score;
     return score;
 }
 
-function getAudioWeight(text) {
-    if (/\b(atmos|truehd|dts-hd|dtsx|dts-x)\b/i.test(text)) return 3;
-    if (/\b(dd5\.1|dd\+5\.1|5\.1|7\.1|aac5\.1)\b/i.test(text)) return 2;
-    return 1;
+function getAudioWeight(stream) {
+    if (stream._audioWeight !== undefined) return stream._audioWeight;
+    const text = getTextForAnalysis(stream);
+    let score = 1;
+    if (/\b(atmos|truehd|dts-hd|dtsx|dts-x)\b/i.test(text)) score = 3;
+    else if (/\b(dd5\.1|dd\+5\.1|5\.1|7\.1|aac5\.1)\b/i.test(text)) score = 2;
+    stream._audioWeight = score;
+    return score;
 }
 
-function getLanguageWeight(text) {
-    if (text.includes('heb') || text.includes('עברית')) return 1;
-    if (text.includes('rus') || text.includes('רוסית')) return 0;
-    return 0;
+function getLanguageWeight(stream) {
+    if (stream._langWeight !== undefined) return stream._langWeight;
+    const text = getTextForAnalysis(stream);
+    let score = 0;
+    if (text.includes('heb') || text.includes('עברית')) score = 1;
+    stream._langWeight = score;
+    return score;
 }
 
-function getQualityScoreForPreSort(s) {
-    const weightTier = s._weightTier || 0
-    const text = getTextForAnalysis(s);
-    return (getResWeight(s) * 1000) + 
-           (getQualityWeight(text) * 100) + 
+function getQualityScoreForPreSort(stream) {
+    const weightTier = stream._weightTier || 0;
+    return (getResWeight(stream) * 1000) + 
+           (getQualityWeight(stream) * 100) + 
            (weightTier * 10) +
-           (getVisualWeight(text) * 10) + 
-           getAudioWeight(text);
+           (getVisualWeight(stream) * 10) + 
+           getAudioWeight(stream);
 }
+
+// ==========================================
+// ה-Handler המרכזי 
+// ==========================================
 
 export default async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -266,8 +298,12 @@ export default async function handler(req, res) {
             }
         }
 
-        let allStreams = [];
-        const trackPromises = promises.map(p => p.then(val => { if (Array.isArray(val)) allStreams = allStreams.concat(val); return val; }).catch(() => {}));
+        const allStreams = [];
+        // שימוש ב-push במקום concat לחסכון משמעותי בהקצאות זיכרון
+        const trackPromises = promises.map(p => p.then(val => { 
+            if (Array.isArray(val) && val.length > 0) allStreams.push(...val); 
+            return val; 
+        }).catch(() => {}));
         
         const INITIAL_WAIT_MS = 5500;
         await Promise.race([
@@ -305,6 +341,9 @@ export default async function handler(req, res) {
             if (!isDuplicate) deduplicatedStreams.push(stream);
         }
 
+        // חישוב דרגות משקל לפני המיון - ירוץ פעם אחת ב-$O(N)$
+        getWeightTiers(deduplicatedStreams);
+
         deduplicatedStreams.sort((a, b) => {
             const scoreA = getQualityScoreForPreSort(a);
             const scoreB = getQualityScoreForPreSort(b);
@@ -316,7 +355,6 @@ export default async function handler(req, res) {
             return getSizeGB(b) - getSizeGB(a);
         });
 
-        // הפרדה ברורה בין גיבוי לעודפים מעולים (תיקון Fallback)
         const topTierStreams = [];
         const qualityRejected = [];
         for (const stream of deduplicatedStreams) {
@@ -327,7 +365,6 @@ export default async function handler(req, res) {
             let isTopTier = true;
 
             if (sizeGB > profile.maxSizeGB) isTopTier = false;
-            // מעקף Seeders: אם null, אנחנו מדלגים על הסינון ומניחים שהוא תקין
             if (!isStreamCached && !isStreamUsenet && seeders !== null && seeders < profile.minSeedersUncached) isTopTier = false;
 
             (isTopTier ? topTierStreams : qualityRejected).push(stream);
@@ -383,13 +420,11 @@ export default async function handler(req, res) {
             if (buckets[key].length > 0) quotaOverflow.push(...buckets[key]);
         }
 
-        // הגבלת VIP והרכבת המערך הסופי בצורה חכמה
         const cappedVipStreams = vipStreams.slice(0, MAX_VIP_SLOTS);
         let finalCandidates = [...cappedVipStreams, ...standardResult];
         
         let missingSlots = profile.maxResults - finalCandidates.length;
 
-        // משיכת גיבויים: קודם מהעודפים המעולים, ורק אם חייבים מהפסולים
         if (missingSlots > 0 && quotaOverflow.length > 0) {
             const taken = quotaOverflow.slice(0, missingSlots);
             finalCandidates.push(...taken);
@@ -399,9 +434,8 @@ export default async function handler(req, res) {
             finalCandidates.push(...qualityRejected.slice(0, missingSlots));
         }
 
+        // המיון הסופי עכשיו רץ באלפיות השנייה - הכל כבר חושב ונמצא בזיכרון!
         finalCandidates.sort((a, b) => {
-            const textA = getTextForAnalysis(a); const textB = getTextForAnalysis(b);
-
             const vipA = isVIPSource(a); const vipB = isVIPSource(b);
             if (vipA !== vipB) return vipA ? -1 : 1;
 
@@ -411,16 +445,16 @@ export default async function handler(req, res) {
             const cA = isCached(a); const cB = isCached(b);
             if (cA !== cB) return cA ? -1 : 1;
 
-            const qA = getQualityWeight(textA); const qB = getQualityWeight(textB);
+            const qA = getQualityWeight(a); const qB = getQualityWeight(b);
             if (qA !== qB) return qB - qA;
 
-            const vA = getVisualWeight(textA); const vB = getVisualWeight(textB);
+            const vA = getVisualWeight(a); const vB = getVisualWeight(b);
             if (vA !== vB) return vB - vA;
 
-            const aA = getAudioWeight(textA); const aB = getAudioWeight(textB);
+            const aA = getAudioWeight(a); const aB = getAudioWeight(b);
             if (aA !== aB) return aB - aA;
 
-            const lA = getLanguageWeight(textA); const lB = getLanguageWeight(textB);
+            const lA = getLanguageWeight(a); const lB = getLanguageWeight(b);
             if (lA !== lB) return lB - lA;
 
             const sA = getSeeders(a) ?? 0; const sB = getSeeders(b) ?? 0;
@@ -439,7 +473,6 @@ export default async function handler(req, res) {
             const text = getTextForAnalysis(stream);
             const hasCacheKeywords = checkCacheKeywords(text);
             
-            // AceStream + HTTP check for direct web (excludes cache/usenet/torrents)
             const isDirectWeb = stream.url && 
                                 (stream.url.startsWith('http') || stream.url.startsWith('acestream')) && 
                                 !hasCacheKeywords && 
@@ -455,7 +488,14 @@ export default async function handler(req, res) {
             stream.name = `[#${position}] ${prefix} | ${cleanName}`;
             stream.title = `[#${position}]\n${cleanTitle}`;
 
-            delete stream._sourceBaseUrl;
+            // מטאטא הזיכרון - מנקה את כל החישובים ששמרנו כדי לא לנפח את התשובה לסטרימיו
+            const keysToDelete = [
+                '_sourceBaseUrl', '_text', '_sizeGB', '_isCached', '_isUsenet', 
+                '_isVip', '_seeders', '_resWeight', '_qualityWeight', 
+                '_visualWeight', '_audioWeight', '_langWeight', '_weightTier'
+            ];
+            keysToDelete.forEach(k => delete stream[k]);
+
             return stream;
         });
 
@@ -463,7 +503,6 @@ export default async function handler(req, res) {
         return res.status(200).json({ streams: finalSliced });
     } catch (error) { 
         console.error('[ESAY DIAGNOSTIC] 💥 שגיאת קריסה כללית ב-Proxy:', error.stack || error);
-        // מונע תקיעה אצל המשתמש במקרה של קריסת קוד חריגה
         return res.status(200).json({ streams: [] }); 
     }
 }
