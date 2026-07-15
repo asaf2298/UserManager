@@ -514,6 +514,9 @@ export default async function handler(req, res) {
         // -----------------------------------------------------------------------------
         const isLargeProfile = profile.maxResults >= 30;
         const resCount = isLargeProfile ? 2 : 1;
+
+        // חילוץ VIPs ראשונים כדי שלא יתערבבו בשאר הבריכות
+        const vipStreams = safeCandidates.filter(s => isVIPSource(s));
         
         const poolDirectWeb = [];
         const poolUncached4K = [];
@@ -521,6 +524,9 @@ export default async function handler(req, res) {
         const poolMain = [];
 
         for (const stream of safeCandidates) {
+            // התיקון הקריטי: אם זה VIP, אנחנו מדלגים עליו כי כבר שמרנו אותו ב-vipStreams
+            if (isVIPSource(stream)) continue;
+            
             if (isDirectWebStream(stream)) {
                 poolDirectWeb.push(stream);
             } else if (!isCached(stream) && !isVIPSource(stream)) {
