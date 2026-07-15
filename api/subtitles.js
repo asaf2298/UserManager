@@ -74,6 +74,11 @@ export default async function handler(req, res) {
                 
                 const subCount = data.subtitles ? data.subtitles.length : 0;
                 console.log(`[ESAY SUBTITLES] ⏱️ תוסף ${cleanBaseUrl} ${reqTypeStr} סיים ב-${elapsed}ms (הביא ${subCount} כתוביות)`);
+
+                // הוסף את השורה הזו כאן כדי שהמערכת תזכור מאיפה כל כתובית הגיעה:
+                if (data && Array.isArray(data.subtitles)) {
+                    data.subtitles.forEach(s => s._sourceBaseUrl = baseUrl);
+                }
                 
                 return { subtitles: data.subtitles || [], isSearch };
             } catch (err) {
@@ -150,6 +155,31 @@ export default async function handler(req, res) {
 
         uniqueSubs = uniqueSubs.map(sub => {
             delete sub._isTextSearch;
+            
+            // חילוץ שם קצר ונקי של האתר מתוך כתובת ה-URL של התוסף
+            let provider = 'Esay Sub';
+            const baseUrl = sub._sourceBaseUrl || ''; // נשמר בזמן השליפה
+            
+            if (baseUrl) {
+                const match = baseUrl.match(/https?:\/\/([^\/]+)/);
+                if (match && match[1]) {
+                    provider = match[1]
+                        .replace('.strem.io', '')
+                        .replace('.elfhosted.com', '')
+                        .replace('.onrender.com', '')
+                        .replace('-stremio', '')
+                        .replace('.club', '');
+                }
+            } else if (sub.id && sub.id.includes('opensubtitles')) {
+                provider = 'OpenSubtitles';
+            }            
+            // עדכון חכם של שדה ה-title: שומר על המידע המקורי ומדגיש את הספק בסוגריים
+            const originalTitle = sub.title ? sub.title.trim() : '';
+            if (originalTitle) {
+                sub.title = `${originalTitle} [${provider}]`;
+            } else {
+                sub.title = `מקור: ${provider}`;
+            }       
             return sub;
         });
 
