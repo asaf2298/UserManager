@@ -195,8 +195,8 @@ function getLanguageWeight(stream) {
 function getQualityScoreForPreSort(stream) {
     const weightTier = stream._weightTier || 0;
     return (getResWeight(stream) * 1000) + 
-           (getQualityWeight(stream) * 100) + 
-           (weightTier * 100) +
+           (getQualityWeight(stream) * 75) + 
+           (weightTier * 150) +
            (getVisualWeight(stream) * 10) + 
            getAudioWeight(stream);
 }
@@ -444,7 +444,7 @@ export default async function handler(req, res) {
             finalCandidates.push(...qualityRejected.slice(0, missingSlots));
         }
         // המיון הסופי עכשיו רץ באלפיות השנייה - הכל כבר חושב ונמצא בזיכרון!
-        // המיון הסופי עם העדפת משקל מוחלטת בתוך אותה רזולוציה!
+        // המיון הסופי עם העדפת משקל מוחלטת בתוך אותה רזולוציה וסטטוס רשת
         finalCandidates.sort((a, b) => {
             const vipA = isVIPSource(a); const vipB = isVIPSource(b);
             if (vipA !== vipB) return vipA ? -1 : 1;
@@ -453,15 +453,16 @@ export default async function handler(req, res) {
             if (rA !== rB) return rB - rA;
 
             const cA = isCached(a); const cB = isCached(b);
-            if (cA !== cB) return cA ? -1 : 1; // כאן Cached תמיד ינצח Uncached בתוך אותה רזולוציה!
+            if (cA !== cB) return cA ? -1 : 1;
 
-            const qA = getQualityWeight(a); const qB = getQualityWeight(b);
-            if (qA !== qB) return qB - qA;
-
-            // התיקון הגדול: דירוג המשקל (WeightTier) שולט כעת! קובץ כבד תמיד יעקוף קובץ קל
+            // התיקון הגדול: דרגת המשקל קובעת! קובץ כבד יעקוף קובץ קל חד משמעית
             const wA = a._weightTier ?? 0;
             const wB = b._weightTier ?? 0;
             if (wA !== wB) return wB - wA;
+
+            // תגיות טקסט (Remux/Web) ישמשו מעתה רק כשובר שוויון בין שני קבצים באותה דרגת משקל
+            const qA = getQualityWeight(a); const qB = getQualityWeight(b);
+            if (qA !== qB) return qB - qA;
 
             const vA = getVisualWeight(a); const vB = getVisualWeight(b);
             if (vA !== vB) return vB - vA;
@@ -472,11 +473,10 @@ export default async function handler(req, res) {
             const lA = getLanguageWeight(a); const lB = getLanguageWeight(b);
             if (lA !== lB) return lB - lA;
 
-            // הסידרים הודחו לתחתית - הם יקבעו רק אם שני קבצים זהים לחלוטין גם במשקל וגם באיכות
             const sA = getSeeders(a) ?? 0; const sB = getSeeders(b) ?? 0;
             if (sA !== sB) return sB - sA;
 
-            return getSizeGB(b) - getSizeGB(a); // גיבוי אחרון בהחלט של גודל מדויק
+            return getSizeGB(b) - getSizeGB(a); // גיבוי אחרון בהחלט
         });
 
         let finalSliced = finalCandidates.slice(0, profile.maxResults);
