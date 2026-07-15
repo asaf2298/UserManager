@@ -30,7 +30,8 @@ const RES_WEIGHT_MAP = {
 
 function getTextForAnalysis(stream) {
     if (stream._text !== undefined) return stream._text;
-    stream._text = ((stream.name || '') + ' ' + (stream.title || '') + ' ' + (stream.description || '')).toLowerCase();
+    const fallbackText = stream.description || stream.behaviorHints?.filename || '';
+    stream._text = ((stream.name || '') + ' ' + (stream.title || '') + ' ' + fallbackText).toLowerCase();
     return stream._text;
 }
 
@@ -101,23 +102,37 @@ function getSizeGB(stream) {
 }
 
 function getWeightTiers(streams) {
-    if (!streams || streams.length === 0) return;    
-    let minSize = Infinity;
-    let maxSize = -Infinity;
-    const len = streams.length;
-    for (let i = 0; i < len; i++) {
-        const size = getSizeGB(streams[i]);
-        if (size < minSize) minSize = size;
-        if (size > maxSize) maxSize = size;
-    }    
-    const range = maxSize - minSize;
-    for (let i = 0; i < len; i++) {
-        const s = streams[i];
-        if (range === 0) {
-            s._weightTier = 0;
-        } else {
-            const normalized = (s._sizeGB - minSize) / range;
-            s._weightTier = Math.floor(normalized * 3.99);
+    if (!streams || streams.length === 0) return;
+    
+    // חלוקה לקבוצות לפי משקל הרזולוציה
+    const resGroups = {};
+    for (let i = 0; i < streams.length; i++) {
+        const rw = getResWeight(streams[i]);
+        if (!resGroups[rw]) resGroups[rw] = [];
+        resGroups[rw].push(streams[i]);
+    }
+    
+    // חישוב Tiers נפרד לחלוטין לכל רזולוציה
+    for (const key in resGroups) {
+        const group = resGroups[key];
+        let minSize = Infinity;
+        let maxSize = -Infinity;
+        
+        for (let i = 0; i < group.length; i++) {
+            const size = getSizeGB(group[i]);
+            if (size < minSize) minSize = size;
+            if (size > maxSize) maxSize = size;
+        }
+        
+        const range = maxSize - minSize;
+        for (let i = 0; i < group.length; i++) {
+            const s = group[i];
+            if (range <= 0.3) { // אם הפער בקבוצה קטן מ-300MB, כולם זהים
+                s._weightTier = 0;
+            } else {
+                const normalized = (s._sizeGB - minSize) / range;
+                s._weightTier = Math.floor(normalized * 3.99); // 0 עד 3
+            }
         }
     }
 }
@@ -571,7 +586,10 @@ export default async function handler(req, res) {
 
             let cleanName = (stream.name || '').replace(REGEX_BRACKETS, '').replace(REGEX_PARENS, '').replace(REGEX_DOWNLOAD, '');
             cleanName = cleanName.replace(/\n+/g, ' ').replace(/^[\s\-\|]+|[\s\-\|]+$/g, '').replace(/\s{2,}/g, ' ').trim();
-            let cleanTitle = (stream.title || '').replace(REGEX_DOWNLOAD, '').trim();
+            // משיכת כותרת מכל שדה זמין כדי למנוע העלמה על ידי סטרימיו
+            let rawTitle = stream.title || stream.description || stream.behaviorHints?.filename || '';
+            let cleanTitle = rawTitle.replace(REGEX_DOWNLOAD, '').replace(/\n+/g, '\n').trim();
+            if (!cleanTitle) cleanTitle = cleanName || 'תוצאה ללא כותרת מהמקור';
 
             let prefix = (isVip || isDirectWeb) ? 'מרשת דפדפן' : (isC ? 'זמין לצפייה' : 'דורש המתנה ואולי כניסה חוזרת');
             
