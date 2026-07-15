@@ -1,6 +1,5 @@
 import fetch from 'node-fetch';
 
-// פונקציית עזר להגנת טיימאאוט מלאה
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -14,13 +13,13 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 let cachedTvCatalogIds = null;
 let lastCacheTime = 0;
 
-async function getTvCatalogIds(tvAddonUrl) {
+async function getTvCatalogIds(tvAddonUrl, headers) {
     if (!tvAddonUrl) return [];
     if (cachedTvCatalogIds && (Date.now() - lastCacheTime < 1000 * 60 * 60)) {
         return cachedTvCatalogIds;
     }
     try {
-        const res = await fetchWithTimeout(`${tvAddonUrl}/manifest.json`, {}, 4000);
+        const res = await fetchWithTimeout(`${tvAddonUrl}/manifest.json`, { headers }, 7500);
         if (!res.ok) return [];
         const manifest = await res.json();
         cachedTvCatalogIds = manifest.catalogs?.map(c => c.id) || [];
@@ -31,9 +30,9 @@ async function getTvCatalogIds(tvAddonUrl) {
     }
 }
 
-async function getSearchCatalogId(baseUrl, type) {
+async function getSearchCatalogId(baseUrl, type, headers) {
     try {
-        const res = await fetchWithTimeout(`${baseUrl}/manifest.json`, {}, 4000);
+        const res = await fetchWithTimeout(`${baseUrl}/manifest.json`, { headers }, 7500);
         if (!res.ok) return null;
         const manifest = await res.json();
         const cat = manifest.catalogs?.find(c => c.type === type && c.extra?.some(e => e.name === 'search'));
@@ -49,6 +48,11 @@ export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     if (req.method === 'OPTIONS') return res.status(200).end();
 
+    const clientUA = req.headers['user-agent'] || 'Stremio/4.4.156';
+    const forwardedIps = req.headers['x-forwarded-for'] || '';
+    const clientIp = forwardedIps ? forwardedIps.split(',')[0].trim() : (req.socket?.remoteAddress || '');
+    const fetchHeaders = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp };
+
     try {
         const urlParts = req.url.split('?')[0].split('/');
         const catIdx = urlParts.indexOf('catalog');
@@ -60,28 +64,28 @@ export default async function handler(req, res) {
         const cleanCatalogId = rawCatalogId.replace('.json', '');
         const extraPart = urlParts.slice(catIdx + 3).join('/'); 
         
-        console.log(`[ESAY CATALOG] 🔍 בקשה: type=${type}, id=${cleanCatalogId}, extra=${extraPart}`);
+        console.log(`\n[ESAY CATALOG] 🔍 בקשת קטלוג חדשה: type=${type}, id=${cleanCatalogId}`);
         
         const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
         const userConfig = configs[userKey] || {};
         const tvAddonUrl = (process.env.TV_ADDON_URL || '').replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
         const catalogBaseUrl = (userConfig.catalogBase || '').replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
 
-        // 1. חיפוש מאוחד
         if (cleanCatalogId.startsWith('esay_mixed_search') && extraPart.includes('search=')) {
-            console.log(`[ESAY CATALOG] 🔎 מזהה חיפוש מאוחד! מנתב ל-TV ו-AIO.`);
+            console.log(`[ESAY CATALOG] 🔎 מזהה בקשת חיפוש מאוחד! מנתב חיפושים ל-TV ו-AIO...`);
+            const searchStartTime = Date.now();
+            
             const [tvSearchId, aioSearchId] = await Promise.all([
-                tvAddonUrl ? getSearchCatalogId(tvAddonUrl, type) : null,
-                catalogBaseUrl ? getSearchCatalogId(catalogBaseUrl, type) : null
+                tvAddonUrl ? getSearchCatalogId(tvAddonUrl, type, fetchHeaders) : null,
+                catalogBaseUrl ? getSearchCatalogId(catalogBaseUrl, type, fetchHeaders) : null
             ]);
 
             const searchPromises = [];
             if (tvSearchId) {
-                searchPromises.push(fetchWithTimeout(`${tvAddonUrl}/catalog/${type}/${tvSearchId}/${extraPart}`, {}, 5000).then(r => r.ok ? r.json() : { metas: [] }).catch(() => ({ metas: [] })));
+                searchPromises.push(fetchWithTimeout(`${tvAddonUrl}/catalog/${type}/${tvSearchId}/${extraPart}`, { headers: fetchHeaders }, 7500).then(r => r.ok ? r.json() : { metas: [] }).catch(() => ({ metas: [] })));
             }
             if (aioSearchId) {
-                console.log(`[ESAY CATALOG] 🚀 מבקש מ-AIO SEARCH: ${catalogBaseUrl}/catalog/${type}/${aioSearchId}/${extraPart}`);
-                searchPromises.push(fetchWithTimeout(`${catalogBaseUrl}/catalog/${type}/${aioSearchId}/${extraPart}`, {}, 5000).then(r => r.ok ? r.json() : { metas: [] }).catch(() => ({ metas: [] })));
+                searchPromises.push(fetchWithTimeout(`${catalogBaseUrl}/catalog/${type}/${aioSearchId}/${extraPart}`, { headers: fetchHeaders }, 7500).then(r => r.ok ? r.json() : { metas: [] }).catch(() => ({ metas: [] })));
             }
 
             const results = await Promise.all(searchPromises);
@@ -98,13 +102,13 @@ export default async function handler(req, res) {
                     }
                 }
             }
-            console.log(`[ESAY CATALOG] ✅ נמצאו ${combinedMetas.length} תוצאות בחיפוש המאוחד.`);
+            const elapsed = Date.now() - searchStartTime;
+            console.log(`[ESAY CATALOG] ✅ חיפוש מאוחד הסתיים תוך ${elapsed}ms. אוחדו ${combinedMetas.length} תוצאות.`);
             return res.status(200).json({ metas: combinedMetas });
         }
 
-        // 2. ניתוב קטלוגים רגיל
         let targetUrl = '';
-        const tvCatalogIds = await getTvCatalogIds(tvAddonUrl);
+        const tvCatalogIds = await getTvCatalogIds(tvAddonUrl, fetchHeaders);
 
         if ((type === 'tv' || type === 'channel') || tvCatalogIds.includes(cleanCatalogId)) {
             if (!tvAddonUrl) return res.status(404).json({ metas: [] });
@@ -114,16 +118,18 @@ export default async function handler(req, res) {
             targetUrl = `${catalogBaseUrl}/catalog/${type}/${rawCatalogId}${extraPart ? '/' + extraPart : ''}`;
         }
 
-        console.log(`[ESAY CATALOG] 🚀 מנתב קטלוג רגיל ל: ${targetUrl}`);
-        const fetchRes = await fetchWithTimeout(targetUrl, {}, 6000);
+        const catStartTime = Date.now();
+        console.log(`[ESAY CATALOG] 🚀 ניתוב קטלוג ל: ${targetUrl}`);
+        
+        const fetchRes = await fetchWithTimeout(targetUrl, { headers: fetchHeaders }, 8000);
         if (!fetchRes.ok) throw new Error(`HTTP ${fetchRes.status}`);
         
         const data = await fetchRes.json();
-        console.log(`[ESAY CATALOG] ✅ התקבלה תגובה מהקטלוג. כמות פריטים: ${data.metas?.length || 0}`);
+        console.log(`[ESAY CATALOG] ✅ הקטלוג הוחזר בהצלחה תוך ${Date.now() - catStartTime}ms. פריטים: ${data.metas?.length || 0}`);
         return res.status(200).json(data);
 
     } catch (error) {
-        console.error('Catalog Proxy Error:', error);
+        console.error(`[ESAY CATALOG] ❌ שגיאת קטלוג: ${error.message}`);
         return res.status(200).json({ metas: [] });
     }
 }
