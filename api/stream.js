@@ -22,7 +22,6 @@ function getTextForAnalysis(stream) {
     return ((stream.name || '') + ' ' + (stream.title || '') + ' ' + (stream.description || '')).toLowerCase();
 }
 
-// תוקן: Regex מדויק ללא False Positives
 function isCached(stream) {
     const text = getTextForAnalysis(stream);
     if (text.includes('download') || text.includes('⬇️')) return false;
@@ -67,13 +66,14 @@ function getQualityWeight(text) {
     return 0;
 }
 
-// תוקן: זיהוי רזולוציה מתקדם באמצעות תוחמים למניעת טעויות זיהוי
 function getResWeight(stream) {
     if (isVIPSource(stream) || stream.behaviorHints?.bingeGroup === 'live-tv') return 3;
     const rawText = getTextForAnalysis(stream);
     let match;
     const found = [];
-    const regexRes = /(?:^|[.\s\[\-_(])(4k|2160p|uhd|1080p|fhd|720p|hdrip|480p|sd)(?:[.\s\]\-_)]|$)/gi;
+    
+    // תוקן: הגדרת תוחמים בטוחה לחלוטין מבאגים של תחביר 
+    const regexRes = /(?:^|[\s\[\(\.\-_])(4k|2160p|uhd|1080p|fhd|720p|hdrip|480p|sd)(?:[\s\]\)\.\-_]|$)/gi;
     
     while ((match = regexRes.exec(rawText)) !== null) {
         found.push(match[1].toLowerCase());
@@ -98,14 +98,15 @@ export default async function handler(req, res) {
     const clientIp = forwardedIps ? forwardedIps.split(',')[0].trim() : (req.socket?.remoteAddress || '');
     const clientUA = req.headers['user-agent'] || 'Stremio/4.4.156';
 
-    console.log(`\n[ESAY DIAGNOSTIC - STREAM] 🟢 בקשת סטרים חדשה התקבלה!`);
-    console.log(`[ESAY DIAGNOSTIC - STREAM] 🌐 URL: ${req.url}`);
-
+    console.log(`\n======================================================`);
+    console.log(`[ESAY DIAGNOSTIC] 🟢 בקשת סטרים חדשה התקבלה!`);
+    console.log(`[ESAY DIAGNOSTIC] 🌐 URL: ${req.url}`);
+    
     try {
         const urlParts  = req.url.split('?')[0].split('/');
         const streamIdx = urlParts.indexOf('stream');
         if (streamIdx < 1 || streamIdx + 2 >= urlParts.length) {
-            console.error(`[ESAY DIAGNOSTIC - STREAM] ❌ שגיאה: מבנה URL לא תקין.`);
+            console.error(`[ESAY DIAGNOSTIC] ❌ שגיאה: מבנה URL לא תקין.`);
             return res.status(400).json({ streams: [] });
         }
 
@@ -116,15 +117,16 @@ export default async function handler(req, res) {
         const idWithExt = rawIdWithExt;
         const id        = idWithExt.replace('.json', '');
 
-        // הוספת הגנת Timeout לענף ה-Live TV הקריטי
         if (type === 'tv' || type === 'channel') {
             const tvAddonUrl = process.env.TV_ADDON_URL;
             if (!tvAddonUrl) return res.status(200).json({ streams: [] });
             try {
                 const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
                 const targetUrl  = `${cleanTvUrl}/stream/series/${idWithExt}`;
+                console.log(`[ESAY DIAGNOSTIC] 📺 ניתוב ישיר לערוץ חי: ${targetUrl}`);
                 const headers    = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp, 'Accept': 'application/json, text/plain, */*' };
                 
+                const startTime = Date.now();
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 9500);
                 let tvRes;
@@ -136,10 +138,11 @@ export default async function handler(req, res) {
 
                 if (tvRes.ok) {
                     const tvData = await tvRes.json();
+                    console.log(`[ESAY DIAGNOSTIC] ✅ לייב עבר בהצלחה (${Date.now() - startTime}ms)`);
                     return res.status(200).json(tvData);
                 }
             } catch (e) {
-                console.error('[ESAY DIAGNOSTIC - LIVE] 💥 שגיאה בשליפת ערוץ חי:', e.message);
+                console.error(`[ESAY DIAGNOSTIC] 💥 שגיאה בשליפת ערוץ חי: ${e.message}`);
             }
             return res.status(200).json({ streams: [] });
         }
@@ -149,9 +152,11 @@ export default async function handler(req, res) {
         const profile       = PROFILES[profileConfig] || PROFILES.friends_light;
         const addons        = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
         
+        console.log(`[ESAY DIAGNOSTIC] ⚙️ פרופיל: ${profileConfig} | תוספים לפניה: ${addons.length}`);
         if (addons.length === 0) return res.status(200).json({ streams: [] });
 
         const fetchFromAddon = async (baseUrl, customIdWithExt = null) => {
+            const startTime = Date.now();
             const controller    = new AbortController();
             const timeoutId     = setTimeout(() => controller.abort(), profile.timeoutMs);
             const cleanBaseUrl  = baseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
@@ -166,16 +171,32 @@ export default async function handler(req, res) {
                 fetchHeaders['X-Forwarded-For'] = clientIp;
             }  
             
+            const reqTypeStr = customIdWithExt ? '(Search)' : '(ID)';
+            
             try {
                 const response = await fetch(targetUrl, { signal: controller.signal, headers: fetchHeaders });
-                if (!response.ok) return [];
+                const elapsed = Date.now() - startTime;
+                
+                if (!response.ok) {
+                    console.log(`[ESAY DIAGNOSTIC] ⚠️ שגיאת שרת ${response.status} מ-${cleanBaseUrl} ${reqTypeStr} אחרי ${elapsed}ms`);
+                    return [];
+                }
+                
                 const data = await response.json();
                 if (data && Array.isArray(data.streams)) {
                     data.streams.forEach(s => s._sourceBaseUrl = baseUrl);
+                    console.log(`[ESAY DIAGNOSTIC] ⏱️ תוסף ${cleanBaseUrl} ${reqTypeStr} סיים ב-${elapsed}ms (הביא ${data.streams.length} סטרימים)`);
                     return data.streams;
                 }
+                console.log(`[ESAY DIAGNOSTIC] ⏱️ תוסף ${cleanBaseUrl} ${reqTypeStr} סיים ב-${elapsed}ms (ללא תוצאות)`);
                 return [];
             } catch (err) { 
+                const elapsed = Date.now() - startTime;
+                if (err.name === 'AbortError' || err.type === 'aborted') {
+                    console.warn(`[ESAY DIAGNOSTIC] ⏳ TIMEOUT: תוסף ${cleanBaseUrl} ${reqTypeStr} נחתך בכוח אחרי ${elapsed}ms!`);
+                } else {
+                    console.error(`[ESAY DIAGNOSTIC] ❌ קריסה בתוסף ${cleanBaseUrl} ${reqTypeStr}: ${err.message}`);
+                }
                 return []; 
             } finally { 
                 clearTimeout(timeoutId); 
@@ -185,16 +206,23 @@ export default async function handler(req, res) {
         let promises = addons.map(url => fetchFromAddon(url));
 
         if (id.startsWith('tt')) {
+            console.log(`[ESAY DIAGNOSTIC] 🔎 מזהה IMDb - מתחיל הליך חיפוש טקסטואלי נלווה...`);
             const movieName = await getCleanMovieName(type, id);
             if (movieName) {
+                console.log(`[ESAY DIAGNOSTIC] 📝 שם לחיפוש שהתקבל: "${movieName}" - מריץ חיפושים`);
                 const textSearchPromises = addons.map(baseUrl => fetchFromAddon(baseUrl, `search=${encodeURIComponent(movieName)}.json`));
                 promises = promises.concat(textSearchPromises);
+            } else {
+                console.log(`[ESAY DIAGNOSTIC] ⚠️ לא נמצא שם טקסטואלי לחיפוש (Meta null)`);
             }
         }
 
         let allStreams = [];
         const trackPromises = promises.map(p => p.then(val => { if (Array.isArray(val)) allStreams = allStreams.concat(val); return val; }).catch(() => {}));
-        await Promise.race([Promise.allSettled(trackPromises), new Promise(resolve => setTimeout(resolve, 5000))]);
+        
+        await Promise.allSettled(trackPromises);
+
+        console.log(`[ESAY DIAGNOSTIC] 📥 איסוף הסתיים. סה"כ סטרימים גולמיים: ${allStreams.length}`);
 
         const deduplicatedStreams = [];
         for (const stream of allStreams) {
@@ -216,6 +244,8 @@ export default async function handler(req, res) {
             if (!isDuplicate) deduplicatedStreams.push(stream);
         }
 
+        console.log(`[ESAY DIAGNOSTIC] 🔄 לאחר Deduplication (מחיקת כפילויות): ${deduplicatedStreams.length} נותרו.`);
+
         const topTierStreams = [];
         const fallbackStreams = [];
         for (const stream of deduplicatedStreams) {
@@ -230,6 +260,8 @@ export default async function handler(req, res) {
 
             (isTopTier ? topTierStreams : fallbackStreams).push(stream);
         }
+
+        console.log(`[ESAY DIAGNOSTIC] ✂️ סינון משקל/סידרים (${profileConfig}): Top Tier: ${topTierStreams.length} | Fallback: ${fallbackStreams.length}`);
 
         const vipStreams      = [];
         const standardStreams = [];
@@ -246,6 +278,8 @@ export default async function handler(req, res) {
             else if (rw === 2) buckets[`720p${sfx}`].push(s);
             else buckets[`sd${sfx}`].push(s);
         }
+
+        console.log(`[ESAY DIAGNOSTIC] 🪣 תכולת דליים: 4K[c:${buckets['4k_c'].length}, u:${buckets['4k_u'].length}] | 1080p[c:${buckets['1080p_c'].length}, u:${buckets['1080p_u'].length}]`);
 
         const isBigProfile = (profileConfig === 'everything' || profileConfig === 'friends_heavy');
         const quotas = isBigProfile
@@ -280,40 +314,40 @@ export default async function handler(req, res) {
             if (buckets[key].length > 0) fallbackStreams.push(...buckets[key]);
         }
 
-        // תוקן: מיון מוחלט (Sort before Slice) לפי הסדר החדש: VIP > Res > Cached > Quality > Size
         let finalCandidates = [...vipStreams, ...standardResult];
         
         const standardBudget  = profile.maxResults - vipStreams.length;
         const missingSlots    = standardBudget - standardResult.length;
 
         if (missingSlots > 0 && fallbackStreams.length > 0) {
-            finalCandidates.push(...fallbackStreams.slice(0, missingSlots));
+            const addedFallbacks = fallbackStreams.slice(0, missingSlots);
+            finalCandidates.push(...addedFallbacks);
+            console.log(`[ESAY DIAGNOSTIC] 🛡️ חסרו משבצות. השלמתי ${addedFallbacks.length} תוצאות נוספות מרשת הביטחון.`);
         }
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] ⚖️ מבצע מיון אבסולוטי על ${finalCandidates.length} תוצאות לפני חיתוך.`);
+        console.log(`[ESAY DIAGNOSTIC] ⚖️ מבצע מיון אבסולוטי (VIP>Res>Cache>Qual>Size) על ${finalCandidates.length} מועמדים.`);
         
         finalCandidates.sort((a, b) => {
             const vipA = isVIPSource(a); const vipB = isVIPSource(b);
-            if (vipA !== vipB) return vipA ? -1 : 1; // 1. VIP מנצח
+            if (vipA !== vipB) return vipA ? -1 : 1;
 
             const rA = getResWeight(a); const rB = getResWeight(b);
-            if (rA !== rB) return rB - rA; // 2. רזולוציה קובעת (4K > 1080p)
+            if (rA !== rB) return rB - rA;
 
             const cA = isCached(a); const cB = isCached(b);
-            if (cA !== cB) return cA ? -1 : 1; // 3. מטמון קובע (Cached > Uncached) בתוך אותה רזולוציה
+            if (cA !== cB) return cA ? -1 : 1;
 
             const qA = getQualityWeight(getTextForAnalysis(a)); const qB = getQualityWeight(getTextForAnalysis(b));
-            if (qA !== qB) return qB - qA; // 4. איכות משנית (Remux > WebDL)
+            if (qA !== qB) return qB - qA;
 
             if (!cA && !cB) {
                 const sA = getSeeders(a) ?? 0; const sB = getSeeders(b) ?? 0;
-                if (sA !== sB) return sB - sA; // 5. מספר סידרים חשוב ל-Uncached
+                if (sA !== sB) return sB - sA;
             }
 
-            return getSizeGB(b) - getSizeGB(a); // 6. גודל יכריע שובר שוויון (כבד יותר > קל יותר)
+            return getSizeGB(b) - getSizeGB(a);
         });
 
-        // החיתוך (Slice) מתבצע רק אחרי שהכל סודר למופת!
         let finalSliced = finalCandidates.slice(0, profile.maxResults);
 
         const REGEX_BRACKETS = /\[[^\]]*(torbox|tb\b|rd|ad|pm|cached|real-?debrid|all-?debrid|premiumize|elfhosted|elfcache)[^\]]*\]/gi;
@@ -338,10 +372,11 @@ export default async function handler(req, res) {
             return stream;
         });
 
-        console.log(`[ESAY DIAGNOSTIC - STREAM] 🏁 סיום מוצלח. נשלחו ${finalSliced.length} סטרימים ללקוח!`);
+        console.log(`[ESAY DIAGNOSTIC] 🏁 הליך הסתיים! נשלחו ${finalSliced.length} סטרימים ללקוח. (הראשון ברשימה: ${finalSliced[0]?.name || 'N/A'})`);
+        console.log(`======================================================\n`);
         return res.status(200).json({ streams: finalSliced });
     } catch (error) { 
-        console.error('[ESAY DIAGNOSTIC - STREAM] 💥 שגיאת קריסה כללית ב-Proxy:', error.stack || error);
+        console.error('[ESAY DIAGNOSTIC] 💥 שגיאת קריסה כללית ב-Proxy:', error.stack || error);
         return res.status(500).json({ streams: [] }); 
     }
 }
