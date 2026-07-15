@@ -526,6 +526,44 @@ export default async function handler(req, res) {
 
         console.log(`[ESAY DIAGNOSTIC] 🏁 סיום מוצלח. נשלחו ${finalSliced.length} תוצאות.`);
         return res.status(200).json({ streams: finalSliced });
+        //////////////////////////////////////////////////
+        // --- מערכת דיאגנוסטיקה ובקרת איכות ---
+        console.log(`\n[ESAY DIAGNOSTIC] 📊 רשימת ה-${finalSliced.length} הסופית שנשלחת לסטרימיו:`);
+        
+        const hashTracker = new Set();
+        let invisibleDrops = 0;
+
+        finalSliced.forEach((s, index) => {
+            const isCached = s.name.includes('זמין לצפייה') ? '🟩 CACHED  ' : (s.name.includes('דפדפן') ? '🟪 VIP/WEB ' : '🟥 UNCACHED');
+            
+            // זיהוי סוג הנתיב
+            let linkType = 'UNKNOWN';
+            if (s.url) linkType = 'URL';
+            else if (s.infoHash) linkType = `HASH:${s.infoHash.substring(0, 8)}...`;
+            else if (s.externalUrl) linkType = 'EXTERNAL';
+
+            // בדיקת כפילויות Hash שסטרימיו יעלים
+            let warning = '';
+            if (s.infoHash) {
+                const normalizedHash = s.infoHash.toLowerCase();
+                if (hashTracker.has(normalizedHash)) {
+                    warning = ' ⚠️ [STREMIO WILL HIDE THIS - DUPLICATE HASH]';
+                    invisibleDrops++;
+                }
+                hashTracker.add(normalizedHash);
+            }
+
+            // חילוץ שם נקי לתצוגה בלוג
+            const displayTitle = (s.title || '').replace(/\n/g, ' ').substring(0, 60);
+
+            console.log(`[#${index + 1}] | ${isCached} | ${linkType} | ${displayTitle}${warning}`);
+        });
+
+        if (invisibleDrops > 0) {
+            console.log(`[ESAY DIAGNOSTIC] 🚨 אזהרה: יש ${invisibleDrops} כפילויות InfoHash ברשימה! סטרימיו יציג בפועל רק ${finalSliced.length - invisibleDrops} תוצאות.`);
+        }
+        console.log('--------------------------------------------------\n');
+        // --- סוף מערכת דיאגנוסטיקה ---
     } catch (error) { 
         console.error('[ESAY DIAGNOSTIC] 💥 שגיאת קריסה כללית ב-Proxy:', error.stack || error);
         return res.status(200).json({ streams: [] }); 
