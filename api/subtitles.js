@@ -1,43 +1,34 @@
 import fetch from 'node-fetch';
 import https from 'https';
-import { getCleanMovieName } from './search.js'; 
+import { getCleanMovieName } from './search.js';
 
-// הוספת סוכן שמתעלם משגיאות של תעודות אבטחה חינמיות (כמו של sub.scary.network)
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+// סוכן ייעודי (Reusable) שעוקף תעודות אבטחה בעייתיות, ישומש רק לתוספים מוכרים כבעייתיים
+const insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        return await fetch(url, { ...options, agent: httpsAgent, signal: controller.signal });
+        return await fetch(url, { ...options, signal: controller.signal });
     } finally {
         clearTimeout(timeoutId);
     }
 }
 
 const ALLOWED_LANGS = new Set([
-    'he', 'heb', 'hebrew', 'iw', 'he-il', 'עברית',
-    'en', 'eng', 'english', 'en-us', 'en-gb',
-    'ru', 'rus', 'russian',
-    'submaker', 'make hebrew', 'forced', 'hi'
+    'he', 'heb', 'hebrew', 'iw', 'he-il', 'עברית',
+    'en', 'eng', 'english', 'en-us', 'en-gb',
+    'ru', 'rus', 'russian',
+    'submaker', 'make hebrew', 'forced', 'hi'
 ]);
-
-function isAllowedLang(lang, title) {
-    if (!lang && !title) return false;
-    const normalizedLang = (lang || '').toLowerCase().trim();
-    const normalizedTitle = (title || '').toLowerCase().trim();
-    return ALLOWED_LANGS.has(normalizedLang) || ALLOWED_LANGS.has(normalizedTitle);
-}
 
 export default async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') return res.status(200).end();
 
-    console.log(`\n======================================================`);
-    console.log(`[ESAY SUBTITLES] 📝 בקשת כתוביות חדשה התקבלה!`);
+    if (req.method === 'OPTIONS') return res.status(200).end();
 
     try {
         const urlParts = req.url.split('?')[0].split('/');
@@ -45,10 +36,15 @@ export default async function handler(req, res) {
         if (subIdx < 1 || subIdx + 2 >= urlParts.length) return res.status(400).json({ subtitles: [] });
 
         const type = urlParts[subIdx + 1];
-        const id = urlParts[subIdx + 2].replace('.json', '');
-        
-        const subtitleUrls = (process.env.SUBTITLE_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
-        if (subtitleUrls.length === 0) return res.status(200).json({ subtitles: [] });
+        let rawIdWithExt = urlParts[subIdx + 2];
+        if (rawIdWithExt.includes('%')) rawIdWithExt = decodeURIComponent(rawIdWithExt);
+        const idWithExt = rawIdWithExt;
+        const id = idWithExt.replace('.json', '');
+
+        const addonUrlsStr = process.env.SUBTITLE_URLS || '';
+        const addons = addonUrlsStr.split('|||').map(u => u.trim()).filter(Boolean);
+
+        if (addons.length === 0) return res.status(200).json({ subtitles: [] });
 
         const fetchSubtitleAddon = async (baseUrl, customQuery, isSearch) => {
             const startTime = Date.now();
@@ -59,11 +55,19 @@ export default async function handler(req, res) {
                 'User-Agent': 'Mozilla/5.0',
                 'Accept': 'application/json, text/plain, */*'
             };
+            
+            const fetchOptions = { headers };
+            
+            // הפעלת מעקף ה-SSL אך ורק מול ספקים ידועים כבעייתיים
+            if (cleanBaseUrl.includes('sub.scary.network')) {
+                fetchOptions.agent = insecureHttpsAgent;
+            }
 
             const reqTypeStr = isSearch ? '(Text Search)' : '(IMDb ID)';
 
             try {
-                const response = await fetchWithTimeout(targetUrl, { headers }, 9000);
+                // זמן מקסימלי בטוח בשרת Vercel
+                const response = await fetchWithTimeout(targetUrl, fetchOptions, 9000);
                 const elapsed = Date.now() - startTime;
 
                 if (!response.ok) {
@@ -74,17 +78,15 @@ export default async function handler(req, res) {
                 
                 const subCount = data.subtitles ? data.subtitles.length : 0;
                 console.log(`[ESAY SUBTITLES] ⏱️ תוסף ${cleanBaseUrl} ${reqTypeStr} סיים ב-${elapsed}ms (הביא ${subCount} כתוביות)`);
-
-                // הוסף את השורה הזו כאן כדי שהמערכת תזכור מאיפה כל כתובית הגיעה:
+                
                 if (data && Array.isArray(data.subtitles)) {
                     data.subtitles.forEach(s => s._sourceBaseUrl = baseUrl);
                 }
-                
                 return { subtitles: data.subtitles || [], isSearch };
             } catch (err) {
                 const elapsed = Date.now() - startTime;
                 if (err.name === 'AbortError' || err.type === 'aborted') {
-                    console.warn(`[ESAY SUBTITLES] ⏳ TIMEOUT: נחתך בכוח ${cleanBaseUrl} ${reqTypeStr} (${elapsed}ms)`);
+                    console.warn(`[ESAY SUBTITLES] ⏳ TIMEOUT: נחתך בכוח ${cleanBaseUrl} ${reqTypeStr} אחרי זמן מקסימלי (${elapsed}ms)`);
                 } else {
                     console.error(`[ESAY SUBTITLES] ❌ קריסה ב-${cleanBaseUrl} ${reqTypeStr}: ${err.message}`);
                 }
@@ -92,62 +94,52 @@ export default async function handler(req, res) {
             }
         };
 
-        let promises = subtitleUrls.map(url => fetchSubtitleAddon(url, id, false));
+        let promises = addons.map(url => fetchSubtitleAddon(url, idWithExt, false));
 
         if (id.startsWith('tt')) {
-            const movieName = await getCleanMovieName(type, id);
-            if (movieName) {
-                console.log(`[ESAY SUBTITLES] 🔎 מריץ חיפוש כתוביות טקסטואלי מקביל עבור: "${movieName}"`);
-                const textPromises = subtitleUrls.map(url => fetchSubtitleAddon(url, `search=${encodeURIComponent(movieName)}`, true));
-                promises = promises.concat(textPromises);
+            const cleanName = await getCleanMovieName(type, id);
+            if (cleanName) {
+                const searchPromises = addons.map(url => fetchSubtitleAddon(url, `search=${encodeURIComponent(cleanName)}.json`, true));
+                promises = promises.concat(searchPromises);
             }
         }
 
         const results = await Promise.allSettled(promises);
         
         let allSubs = [];
-        for (const r of results) {
-            if (r.status === 'fulfilled' && r.value && Array.isArray(r.value.subtitles)) {
-                r.value.subtitles.forEach(sub => {
-                    sub._isTextSearch = r.value.isSearch;
-                    allSubs.push(sub);
-                });
+        for (const res of results) {
+            if (res.status === 'fulfilled' && res.value.subtitles.length > 0) {
+                const { subtitles, isSearch } = res.value;
+                const tagged = subtitles.map(s => ({ ...s, _isTextSearch: isSearch }));
+                allSubs = allSubs.concat(tagged);
             }
         }
 
-        allSubs = allSubs.filter(sub => isAllowedLang(sub.lang, sub.title));
-
-        console.log(`[ESAY SUBTITLES] 📥 נאספו סה"כ ${allSubs.length} כתוביות חוקיות מכל המקורות.`);
-
-        const uniqueSubsMap = new Map();
-        for (const sub of allSubs) {
+        allSubs = allSubs.filter(sub => {
             const lang = (sub.lang || '').toLowerCase();
-            const key = sub.url ? sub.url : `${sub.id}_${lang}`; 
-            
-            if (!uniqueSubsMap.has(key)) {
-                uniqueSubsMap.set(key, sub);
-            } else {
-                const existingSub = uniqueSubsMap.get(key);
-                if (existingSub._isTextSearch === true && sub._isTextSearch === false) {
-                    uniqueSubsMap.set(key, sub);
-                }
-            }
+            return ALLOWED_LANGS.some(allowed => lang.includes(allowed)) || lang.includes('submaker');
+        });
+
+        const seenUrls = new Set();
+        let uniqueSubs = [];
+        for (const sub of allSubs) {
+            if (sub.url && seenUrls.has(sub.url)) continue;
+            if (sub.url) seenUrls.add(sub.url);
+            uniqueSubs.push(sub);
         }
-        
-        let uniqueSubs = Array.from(uniqueSubsMap.values());
-        console.log(`[ESAY SUBTITLES] 🔄 אחרי Deduplication: נותרו ${uniqueSubs.length} כתוביות יחודיות.`);
 
         uniqueSubs.sort((a, b) => {
             const langA = (a.lang || '').toLowerCase();
             const langB = (b.lang || '').toLowerCase();
-            const isHebA = ['he', 'heb', 'hebrew', 'iw', 'עברית'].includes(langA);
-            const isHebB = ['he', 'heb', 'hebrew', 'iw', 'עברית'].includes(langB);
-            
-            if (isHebA && !isHebB) return -1; 
+
+            const isHebA = langA.includes('heb') || langA.includes('עברית');
+            const isHebB = langB.includes('heb') || langB.includes('עברית');
+
+            if (isHebA && !isHebB) return -1;
             if (!isHebA && isHebB) return 1;
 
             if (a._isTextSearch !== b._isTextSearch) {
-                return a._isTextSearch ? 1 : -1; 
+                return a._isTextSearch ? 1 : -1;
             }
 
             return 0;
@@ -156,9 +148,8 @@ export default async function handler(req, res) {
         uniqueSubs = uniqueSubs.map(sub => {
             delete sub._isTextSearch;
             
-            // חילוץ שם קצר ונקי של האתר מתוך כתובת ה-URL של התוסף
             let provider = 'Esay Sub';
-            const baseUrl = sub._sourceBaseUrl || ''; // נשמר בזמן השליפה
+            const baseUrl = sub._sourceBaseUrl || '';
             
             if (baseUrl) {
                 const match = baseUrl.match(/https?:\/\/([^\/]+)/);
@@ -172,23 +163,24 @@ export default async function handler(req, res) {
                 }
             } else if (sub.id && sub.id.includes('opensubtitles')) {
                 provider = 'OpenSubtitles';
-            }            
-            // עדכון חכם של שדה ה-title: שומר על המידע המקורי ומדגיש את הספק בסוגריים
+            }
+            
             const originalTitle = sub.title ? sub.title.trim() : '';
             if (originalTitle) {
                 sub.title = `${originalTitle} [${provider}]`;
             } else {
                 sub.title = `מקור: ${provider}`;
-            }       
+            }
+            
+            delete sub._sourceBaseUrl;
             return sub;
         });
 
         console.log(`[ESAY SUBTITLES] 🏁 הליך הסתיים. נשלחו ${uniqueSubs.length} כתוביות מסודרות ללקוח.`);
-        console.log(`======================================================\n`);
         return res.status(200).json({ subtitles: uniqueSubs });
 
     } catch (error) {
-        console.error('[ESAY SUBTITLES] 💥 שגיאה כללית בפרוקסי:', error);
-        return res.status(500).json({ subtitles: [] });
+        console.error('[ESAY SUBTITLES] 💥 Global Proxy Error:', error);
+        return res.status(200).json({ subtitles: [] });
     }
 }
