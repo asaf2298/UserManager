@@ -226,14 +226,6 @@ function isDirectWebStream(stream) {
              !stream.infoHash);
 }
 
-function isWebFriendly(stream) {
-    if (stream._isWebFriendly !== undefined) return stream._isWebFriendly;
-    const text = getTextForAnalysis(stream);
-    // זיהוי קידודים בעייתיים (HEVC, 10bit, x265) שבדרך כלל קורסים בדפדפנים
-    const isHeavy = /\b(hevc|x265|h265|10bit)\b/i.test(text);
-    stream._isWebFriendly = !isHeavy;
-    return stream._isWebFriendly;
-}
 // ==========================================
 // ה-Handler המרכזי 
 // ==========================================
@@ -291,7 +283,6 @@ export default async function handler(req, res) {
         const configs       = JSON.parse(process.env.USER_CONFIGS || '{}');
         const profileConfig = configs[userKey]?.profile || 'friends_light';
         const profile       = PROFILES[profileConfig] || PROFILES.friends_light;
-        const isStrictWeb = (profileConfig === 'family' || profileConfig === 'friends_light'); // סינון תוכן קשוח לניגון
         const addons        = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
         
         if (addons.length === 0) return res.status(200).json({ streams: [] });
@@ -603,25 +594,23 @@ export default async function handler(req, res) {
             if (!cleanTitle) cleanTitle = cleanName || 'תוצאה ללא כותרת מהמקור';
 
             // בניית תחילית עם אזהרת תאימות לקבצים "כבדים"
-            let prefix = (isVip || isDirectWeb) ? 'מרשת דפדפן' : (isC ? 'זמין לצפייה' : 'דורש המתנה ואולי כניסה חוזרת');
-            
-            if (!isWebFriendly(stream)) {
-                prefix = '⚠️ לנגן טלוויזיה/חיצוני | ' + prefix;
-            }
-            
+            let prefix = (isVip || isDirectWeb) ? 'מרשת דפדפן' : (isC ? 'זמין לצפייה' : 'דורש המתנה ואולי כניסה חוזרת'); 
+            // זיהוי הגבלת נגן לפני שאנחנו מוחקים אותה, והוספת אזהרה לטקסט
+            if (stream.behaviorHints && stream.behaviorHints.notWebReady) {
+                prefix += ' (לנגן תומך)';
+            }   
             stream.name = `[#${position}] ${prefix} | ${cleanName}`;
             stream.title = `[#${position}]\n${cleanTitle}`;
-
             // --- מנטרל הגבלות פנימיות של ממשק סטרימיו ---
             if (stream.behaviorHints) {
-                // מונע מסטרימיו להעלים קבצי MKV בגרסאות ווב או במכשירים חלשים
+                // חייבים למחוק כדי שסטרימיו-ווב יציג את התוצאה במקום להעלים אותה!
                 delete stream.behaviorHints.notWebReady; 
-                // מונע מסטרימיו לקבץ ולהסתיר תוצאות דומות שמגיעות מאותו מקור
+                // מונע מסטרימיו לקבץ ולהסתיר תוצאות דומות
                 delete stream.behaviorHints.bingeGroup;  
             }
             // מחיקת התיאור המקורי למקרה שסטרימיו משתמש בו לסינון כפילויות
-            delete stream.description; 
-
+            delete stream.description;
+            
             // ניקוי המשתנים הפנימיים שלנו
             const keysToDelete = [
                 '_sourceBaseUrl', '_text', '_sizeGB', '_isCached', '_isUsenet', 
