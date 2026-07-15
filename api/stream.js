@@ -514,10 +514,6 @@ export default async function handler(req, res) {
         // -----------------------------------------------------------------------------
         const isLargeProfile = profile.maxResults >= 30;
         const resCount = isLargeProfile ? 2 : 1;
-
-        // 1. חילוץ VIPs ראשונים לפני הבריכות
-        const vipStreams = safeCandidates.filter(s => isVIPSource(s));
-        const remainingStreams = safeCandidates.filter(s => !isVIPSource(s));
         
         const poolDirectWeb = [];
         const poolUncached4K = [];
@@ -578,7 +574,7 @@ export default async function handler(req, res) {
         combinedStandardAndUncached.sort(masterSortFunc);
 
         // שימוש במשתנה חדש וסופי שמרכז את הכל
-        let finalSliced = [...vipStreams, ...combinedStandardAndUncached, ...reservedDirectWeb];
+        let finalSliced = [...cappedVipStreams, ...combinedStandardAndUncached, ...reservedDirectWeb];
 
        // -----------------------------------------------------------------------------
         // 4. עיצוב השמות (Map) וניקוי זיכרון וניטרול הגבלות צד-לקוח של סטרימיו
