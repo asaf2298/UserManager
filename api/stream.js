@@ -195,12 +195,21 @@ function getLanguageWeight(stream) {
 function getQualityScoreForPreSort(stream) {
     const weightTier = stream._weightTier || 0;
     return (getResWeight(stream) * 1000) + 
-           (getQualityWeight(stream) * 75) + 
-           (weightTier * 150) +
+           (getQualityWeight(stream) * 100) + 
+           (weightTier * 300) +
            (getVisualWeight(stream) * 10) + 
            getAudioWeight(stream);
 }
 
+function isDirectWebStream(stream) {
+    const text = getTextForAnalysis(stream);
+    const hasCacheKeywords = checkCacheKeywords(text);
+    return !!(stream.url && 
+             (stream.url.startsWith('http') || stream.url.startsWith('acestream')) && 
+             !hasCacheKeywords && 
+             !isUsenet(stream) && 
+             !stream.infoHash);
+}
 // ==========================================
 // ה-Handler המרכזי 
 // ==========================================
@@ -445,6 +454,9 @@ export default async function handler(req, res) {
         }
         // המיון הסופי עכשיו רץ באלפיות השנייה - הכל כבר חושב ונמצא בזיכרון!
         // המיון הסופי עם העדפת משקל מוחלטת בתוך אותה רזולוציה וסטטוס רשת
+        // -----------------------------------------------------------------------------
+        // 1. המיון הסופי המרכזי
+        // -----------------------------------------------------------------------------
         finalCandidates.sort((a, b) => {
             const vipA = isVIPSource(a); const vipB = isVIPSource(b);
             if (vipA !== vipB) return vipA ? -1 : 1;
@@ -455,12 +467,9 @@ export default async function handler(req, res) {
             const cA = isCached(a); const cB = isCached(b);
             if (cA !== cB) return cA ? -1 : 1;
 
-            // התיקון הגדול: דרגת המשקל קובעת! קובץ כבד יעקוף קובץ קל חד משמעית
-            const wA = a._weightTier ?? 0;
-            const wB = b._weightTier ?? 0;
+            const wA = a._weightTier ?? 0; const wB = b._weightTier ?? 0;
             if (wA !== wB) return wB - wA;
 
-            // תגיות טקסט (Remux/Web) ישמשו מעתה רק כשובר שוויון בין שני קבצים באותה דרגת משקל
             const qA = getQualityWeight(a); const qB = getQualityWeight(b);
             if (qA !== qB) return qB - qA;
 
@@ -476,33 +485,89 @@ export default async function handler(req, res) {
             const sA = getSeeders(a) ?? 0; const sB = getSeeders(b) ?? 0;
             if (sA !== sB) return sB - sA;
 
-            return getSizeGB(b) - getSizeGB(a); // גיבוי אחרון בהחלט
+            return getSizeGB(b) - getSizeGB(a);
         });
 
-        // חומת מגן: סינון קריטי של ערכים פגומים או ריקים
-        // מוודא שלכל הסטרימים יש באמת נתיב ניגון חוקי לפני שהם תופסים מקום במכסה
-        finalCandidates = finalCandidates.filter(stream => {
-            if (!stream) return false;
-            // סטרימיו חייב לפחות אחד מהפרמטרים הבאים כדי שהכפתור יעבוד ולא ידלג עליו
-            const hasPlayableLink = stream.url || stream.infoHash || stream.externalUrl;
-            return hasPlayableLink;
-        });
-        // עכשיו חותכים את ה-30 הבטוחים והתקינים ב-100%
-        let finalSliced = finalCandidates.slice(0, profile.maxResults);
-        
+        // -----------------------------------------------------------------------------
+        // 2. חומת מגן: סינון קריטי של ערכים פגומים או ריקים
+        // -----------------------------------------------------------------------------
+        let safeCandidates = finalCandidates.filter(stream => stream && (stream.url || stream.infoHash || stream.externalUrl));
+
+        // -----------------------------------------------------------------------------
+        // 3. מערכת שריון מקומות חכמה (Dynamic Allocation)
+        // -----------------------------------------------------------------------------
+        const isLargeProfile = profile.maxResults >= 30;
+        const resCount = isLargeProfile ? 2 : 1;
+
+        const poolDirectWeb = [];
+        const poolUncached4K = [];
+        const poolUncached1080p = [];
+        const poolMain = [];
+
+        for (const stream of safeCandidates) {
+            if (isDirectWebStream(stream)) {
+                poolDirectWeb.push(stream);
+            } else if (!isCached(stream) && !isVIPSource(stream)) {
+                const resWeight = getResWeight(stream);
+                if (resWeight === 4) poolUncached4K.push(stream);
+                else if (resWeight === 3) poolUncached1080p.push(stream);
+                else poolMain.push(stream);
+            } else {
+                poolMain.push(stream);
+            }
+        }
+
+        const masterSortFunc = (a, b) => {
+            const vipA = isVIPSource(a); const vipB = isVIPSource(b);
+            if (vipA !== vipB) return vipA ? -1 : 1;
+            const rA = getResWeight(a); const rB = getResWeight(b);
+            if (rA !== rB) return rB - rA;
+            const cA = isCached(a); const cB = isCached(b);
+            if (cA !== cB) return cA ? -1 : 1;
+            const wA = a._weightTier ?? 0; const wB = b._weightTier ?? 0;
+            if (wA !== wB) return wB - wA;
+            const qA = getQualityWeight(a); const qB = getQualityWeight(b);
+            if (qA !== qB) return qB - qA;
+            const vA = getVisualWeight(a); const vB = getVisualWeight(b);
+            if (vA !== vB) return vB - vA;
+            const aA = getAudioWeight(a); const aB = getAudioWeight(b);
+            if (aA !== aB) return aB - aA;
+            const lA = getLanguageWeight(a); const lB = getLanguageWeight(b);
+            if (lA !== lB) return lB - lA;
+            const sA = getSeeders(a) ?? 0; const sB = getSeeders(b) ?? 0;
+            if (sA !== sB) return sB - sA;
+            return getSizeGB(b) - getSizeGB(a);
+        };
+
+        poolUncached4K.sort(masterSortFunc);
+        poolUncached1080p.sort(masterSortFunc);
+        poolDirectWeb.sort(masterSortFunc);
+
+        const reservedU4K = poolUncached4K.splice(0, resCount);
+        const reservedU1080p = poolUncached1080p.splice(0, resCount);
+        const reservedDirectWeb = poolDirectWeb.splice(0, resCount);
+
+        const restToFill = [...poolMain, ...poolUncached4K, ...poolUncached1080p, ...poolDirectWeb];
+        restToFill.sort(masterSortFunc);
+
+        const currentReservedCount = reservedU4K.length + reservedU1080p.length + reservedDirectWeb.length;
+        const remainingSlots = Math.max(0, profile.maxResults - currentReservedCount);
+        const standardFill = restToFill.slice(0, remainingSlots);
+
+        const combinedStandardAndUncached = [...standardFill, ...reservedU4K, ...reservedU1080p];
+        combinedStandardAndUncached.sort(masterSortFunc);
+
+        // שימוש במשתנה חדש וסופי שמרכז את הכל
+        let finalSliced = [...combinedStandardAndUncached, ...reservedDirectWeb];
+
+        // -----------------------------------------------------------------------------
+        // 4. עיצוב השמות (Map) וניקוי זיכרון למניעת עומס
+        // -----------------------------------------------------------------------------
         finalSliced = finalSliced.map((stream, index) => {
             const isVip       = isVIPSource(stream);
             const isC         = isCached(stream);
             const position    = index + 1;
-
-            const text = getTextForAnalysis(stream);
-            const hasCacheKeywords = checkCacheKeywords(text);
-            
-            const isDirectWeb = stream.url && 
-                                (stream.url.startsWith('http') || stream.url.startsWith('acestream')) && 
-                                !hasCacheKeywords && 
-                                !isUsenet(stream) && 
-                                !stream.infoHash;
+            const isDirectWeb = isDirectWebStream(stream);
 
             let cleanName = (stream.name || '').replace(REGEX_BRACKETS, '').replace(REGEX_PARENS, '').replace(REGEX_DOWNLOAD, '');
             cleanName = cleanName.replace(/\n+/g, ' ').replace(/^[\s\-\|]+|[\s\-\|]+$/g, '').replace(/\s{2,}/g, ' ').trim();
@@ -513,7 +578,6 @@ export default async function handler(req, res) {
             stream.name = `[#${position}] ${prefix} | ${cleanName}`;
             stream.title = `[#${position}]\n${cleanTitle}`;
 
-            // מטאטא הזיכרון - מנקה את כל החישובים ששמרנו כדי לא לנפח את התשובה לסטרימיו
             const keysToDelete = [
                 '_sourceBaseUrl', '_text', '_sizeGB', '_isCached', '_isUsenet', 
                 '_isVip', '_seeders', '_resWeight', '_qualityWeight', 
@@ -524,25 +588,22 @@ export default async function handler(req, res) {
             return stream;
         });
 
-        console.log(`[ESAY DIAGNOSTIC] 🏁 סיום מוצלח. נשלחו ${finalSliced.length} תוצאות.`);
-        return res.status(200).json({ streams: finalSliced });
-        //////////////////////////////////////////////////
-        // --- מערכת דיאגנוסטיקה ובקרת איכות ---
+        // -----------------------------------------------------------------------------
+        // 5. מערכת דיאגנוסטיקה ובקרת איכות - הלוג!
+        // -----------------------------------------------------------------------------
         console.log(`\n[ESAY DIAGNOSTIC] 📊 רשימת ה-${finalSliced.length} הסופית שנשלחת לסטרימיו:`);
         
         const hashTracker = new Set();
         let invisibleDrops = 0;
 
         finalSliced.forEach((s, index) => {
-            const isCached = s.name.includes('זמין לצפייה') ? '🟩 CACHED  ' : (s.name.includes('דפדפן') ? '🟪 VIP/WEB ' : '🟥 UNCACHED');
+            const statusTag = s.name.includes('זמין לצפייה') ? '🟩 CACHED  ' : (s.name.includes('דפדפן') ? '🟪 VIP/WEB ' : '🟥 UNCACHED');
             
-            // זיהוי סוג הנתיב
             let linkType = 'UNKNOWN';
             if (s.url) linkType = 'URL';
             else if (s.infoHash) linkType = `HASH:${s.infoHash.substring(0, 8)}...`;
             else if (s.externalUrl) linkType = 'EXTERNAL';
 
-            // בדיקת כפילויות Hash שסטרימיו יעלים
             let warning = '';
             if (s.infoHash) {
                 const normalizedHash = s.infoHash.toLowerCase();
@@ -553,17 +614,20 @@ export default async function handler(req, res) {
                 hashTracker.add(normalizedHash);
             }
 
-            // חילוץ שם נקי לתצוגה בלוג
             const displayTitle = (s.title || '').replace(/\n/g, ' ').substring(0, 60);
-
-            console.log(`[#${index + 1}] | ${isCached} | ${linkType} | ${displayTitle}${warning}`);
+            console.log(`[#${index + 1}] | ${statusTag} | ${linkType} | ${displayTitle}${warning}`);
         });
 
         if (invisibleDrops > 0) {
             console.log(`[ESAY DIAGNOSTIC] 🚨 אזהרה: יש ${invisibleDrops} כפילויות InfoHash ברשימה! סטרימיו יציג בפועל רק ${finalSliced.length - invisibleDrops} תוצאות.`);
         }
-        console.log('--------------------------------------------------\n');
-        // --- סוף מערכת דיאגנוסטיקה ---
+        console.log(`[ESAY DIAGNOSTIC] 🏁 סיום מוצלח. נשלחו ${finalSliced.length} תוצאות.\n--------------------------------------------------\n`);
+
+        // -----------------------------------------------------------------------------
+        // 6. שליחת התשובה הסופית
+        // -----------------------------------------------------------------------------
+        return res.status(200).json({ streams: finalSliced });
+
     } catch (error) { 
         console.error('[ESAY DIAGNOSTIC] 💥 שגיאת קריסה כללית ב-Proxy:', error.stack || error);
         return res.status(200).json({ streams: [] }); 
