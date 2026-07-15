@@ -120,8 +120,8 @@ function getAudioWeight(text) {
 }
 
 function getLanguageWeight(text) {
-    if (text.includes('heb') || text.includes('עברית')) return 2;
-    if (text.includes('rus') || text.includes('רוסית')) return 1;
+    if (text.includes('heb') || text.includes('עברית')) return 1;
+    if (text.includes('rus') || text.includes('רוסית')) return 0;
     return 0;
 }
 
