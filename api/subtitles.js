@@ -55,6 +55,18 @@ export default async function handler(req, res) {
             const cleanBaseUrl = baseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
             const targetUrl = `${cleanBaseUrl}/subtitles/${type}/${customQuery}.json`;
 
+            // אופטימיזציה: חישוב שם הספק פעם אחת בלבד לאדאון, במקום לכל כתובית
+            let calculatedProvider = 'Esay Sub';
+            const match = cleanBaseUrl.match(/https?:\/\/([^\/]+)/);
+            if (match && match[1]) {
+                calculatedProvider = match[1]
+                    .replace('.strem.io', '')
+                    .replace('.elfhosted.com', '')
+                    .replace('.onrender.com', '')
+                    .replace('-stremio', '')
+                    .replace('.club', '');
+            }
+
             const headers = {
                 'User-Agent': 'Mozilla/5.0',
                 'Accept': 'application/json, text/plain, */*'
@@ -62,7 +74,6 @@ export default async function handler(req, res) {
             
             const fetchOptions = { headers };
             
-            // שימוש בסוכן הדינמי למניעת קריסות פרוטוקול בהפניות פנימיות
             if (cleanBaseUrl.includes('sub.scary.network')) {
                 fetchOptions.agent = dynamicAgent;
             }
@@ -75,17 +86,14 @@ export default async function handler(req, res) {
 
                 if (!response.ok) {
                     console.log(`[ESAY SUBTITLES] ⚠️ סטטוס ${response.status} מ-${cleanBaseUrl} ${reqTypeStr}`);
-                    return { subtitles: [], isSearch };
+                    return { subtitles: [], isSearch, calculatedProvider };
                 }
                 const data = await response.json();
                 
                 const subCount = data.subtitles ? data.subtitles.length : 0;
                 console.log(`[ESAY SUBTITLES] ⏱️ תוסף ${cleanBaseUrl} ${reqTypeStr} סיים ב-${elapsed}ms (הביא ${subCount} כתוביות)`);
                 
-                if (data && Array.isArray(data.subtitles)) {
-                    data.subtitles.forEach(s => s._sourceBaseUrl = baseUrl);
-                }
-                return { subtitles: data.subtitles || [], isSearch };
+                return { subtitles: data.subtitles || [], isSearch, calculatedProvider };
             } catch (err) {
                 const elapsed = Date.now() - startTime;
                 if (err.name === 'AbortError' || err.type === 'aborted') {
@@ -93,13 +101,12 @@ export default async function handler(req, res) {
                 } else {
                     console.error(`[ESAY SUBTITLES] ❌ קריסה ב-${cleanBaseUrl} ${reqTypeStr}: ${err.message}`);
                 }
-                return { subtitles: [], isSearch };
+                return { subtitles: [], isSearch, calculatedProvider };
             }
         };
 
         let promises = addons.map(url => fetchSubtitleAddon(url, idWithExt, false));
 
-        // הוספנו תמיכה גם ב-TMDB וגם לוגים שיסבירו למה החיפוש טקסט רץ או נדחה
         if (id.startsWith('tt') || id.startsWith('tmdb:')) {
             console.log(`[ESAY SUBTITLES] 🔍 מנסה לבצע גיבוי חיפוש טקסט עבור ID: ${id}`);
             const cleanName = await getCleanMovieName(type, id);
@@ -115,26 +122,36 @@ export default async function handler(req, res) {
 
         const results = await Promise.allSettled(promises);
         
-        let allSubs = [];
-        for (const res of results) {
-            if (res.status === 'fulfilled' && res.value.subtitles.length > 0) {
-                const { subtitles, isSearch } = res.value;
-                const tagged = subtitles.map(s => ({ ...s, _isTextSearch: isSearch }));
-                allSubs = allSubs.concat(tagged);
-            }
-        }
-
-        allSubs = allSubs.filter(sub => {
-            const lang = (sub.lang || '').toLowerCase();
-            return ALLOWED_LANGS.some(allowed => lang.includes(allowed));
-        });
-
+        // אופטימיזציה: מעבר יחיד ב-O(N) לפריקה, סינון וכפילויות, ללא העתקות זיכרון יקרות
         const seenUrls = new Set();
         let uniqueSubs = [];
-        for (const sub of allSubs) {
-            if (sub.url && seenUrls.has(sub.url)) continue;
-            if (sub.url) seenUrls.add(sub.url);
-            uniqueSubs.push(sub);
+
+        for (const res of results) {
+            if (res.status === 'fulfilled' && res.value.subtitles.length > 0) {
+                const { subtitles, isSearch, calculatedProvider } = res.value;
+                
+                for (let i = 0; i < subtitles.length; i++) {
+                    const sub = subtitles[i];
+                    
+                    // 1. חסימת כפילויות מיידית
+                    if (sub.url && seenUrls.has(sub.url)) continue;
+                    
+                    // 2. סינון שפה
+                    const lang = (sub.lang || '').toLowerCase();
+                    const isAllowed = ALLOWED_LANGS.some(allowed => lang.includes(allowed));
+                    
+                    if (isAllowed) {
+                        if (sub.url) seenUrls.add(sub.url);
+                        
+                        // 3. הדבקת משתני עזר לאובייקט הקיים (Memoization) במקום לשבט אותו
+                        sub._isTextSearch = isSearch;
+                        sub._providerName = (sub.id && sub.id.includes('opensubtitles')) ? 'OpenSubtitles' : calculatedProvider;
+                        
+                        // שימוש ב-push היעיל ביותר
+                        uniqueSubs.push(sub);
+                    }
+                }
+            }
         }
 
         uniqueSubs.sort((a, b) => {
@@ -155,33 +172,19 @@ export default async function handler(req, res) {
         });
 
         uniqueSubs = uniqueSubs.map(sub => {
-            delete sub._isTextSearch;
-            
-            let provider = 'Esay Sub';
-            const baseUrl = sub._sourceBaseUrl || '';
-            
-            if (baseUrl) {
-                const match = baseUrl.match(/https?:\/\/([^\/]+)/);
-                if (match && match[1]) {
-                    provider = match[1]
-                        .replace('.strem.io', '')
-                        .replace('.elfhosted.com', '')
-                        .replace('.onrender.com', '')
-                        .replace('-stremio', '')
-                        .replace('.club', '');
-                }
-            } else if (sub.id && sub.id.includes('opensubtitles')) {
-                provider = 'OpenSubtitles';
-            }
-            
+            const provider = sub._providerName || 'Esay Sub';
             const originalTitle = sub.title ? sub.title.trim() : '';
+            
             if (originalTitle) {
                 sub.title = `${originalTitle} [${provider}]`;
             } else {
                 sub.title = `מקור: ${provider}`;
             }
             
-            delete sub._sourceBaseUrl;
+            // מטאטא זיכרון
+            delete sub._isTextSearch;
+            delete sub._providerName;
+            delete sub._sourceBaseUrl; 
             return sub;
         });
 
