@@ -9,5 +9,16 @@
     { "source": "/:user/stream/:type/:id", "destination": "/api/stream" },
     { "source": "/:user/subtitles/:type/:id.json", "destination": "/api/subtitles" },
     { "source": "/:user/subtitles/:type/:id", "destination": "/api/subtitles" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "s-maxage=0, no-store, no-cache, must-revalidate, proxy-revalidate"
+        }
+      ]
+    }
   ]
 }
