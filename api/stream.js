@@ -22,21 +22,25 @@ function getTextForAnalysis(stream) {
     return ((stream.name || '') + ' ' + (stream.title || '') + ' ' + (stream.description || '')).toLowerCase();
 }
 
-function isCached(stream) {
-    const text = getTextForAnalysis(stream);
-    if (text.includes('download') || text.includes('⬇️')) return false;
-    const hasCacheKeywords = /torbox|\btb\b|comet|\bcached\b|\brd\+|elfhosted|elfcache|all-?debrid|\bad\+|premiumize|debrid-?link|stremthru/i.test(text);
-    if (hasCacheKeywords) return true;
-    if (stream.infoHash) return false;
-    if (stream.url && (stream.url.startsWith('magnet:') || stream.url.toLowerCase().endsWith('.torrent'))) return false;
-    if (!stream.url) return false;
-    if (stream.url.startsWith('http') || stream.url.startsWith('acestream')) return true;
-    return false;
-}
-
 function isUsenet(stream) {
     const text = getTextForAnalysis(stream);
     return text.includes('usenet') || text.includes('nzb');
+}
+
+function isCached(stream) {
+    const text = getTextForAnalysis(stream);
+    if (text.includes('download') || text.includes('⬇️')) return false;
+    
+    const hasCacheKeywords = /torbox|\btb\b|comet|\bcached\b|\brd\+|elfhosted|elfcache|all-?debrid|\bad\+|premiumize|debrid-?link|stremthru/i.test(text);
+    if (hasCacheKeywords) return true;
+    if (stream.infoHash) return false;
+    if (stream.url && (stream.url.startsWith('magnet:') || stream.url.toLowerCase().endsWith('.torrent') || stream.url.toLowerCase().endsWith('.nzb'))) return false;
+    
+    if (isUsenet(stream)) return false;
+
+    if (!stream.url) return false;
+    if (stream.url.startsWith('http') || stream.url.startsWith('acestream')) return true;
+    return false;
 }
 
 function isVIPSource(stream) {
@@ -71,8 +75,6 @@ function getResWeight(stream) {
     const rawText = getTextForAnalysis(stream);
     let match;
     const found = [];
-    
-    // תוקן: הגדרת תוחמים בטוחה לחלוטין מבאגים של תחביר 
     const regexRes = /(?:^|[\s\[\(\.\-_])(4k|2160p|uhd|1080p|fhd|720p|hdrip|480p|sd)(?:[\s\]\)\.\-_]|$)/gi;
     
     while ((match = regexRes.exec(rawText)) !== null) {
@@ -88,7 +90,32 @@ function getResWeight(stream) {
     return Math.max(...weights);
 }
 
+// ==========================================
+// 🚀 Hyper-Precision: מנוע שקלול טכנולוגיות
+// ==========================================
+function getVisualWeight(text) {
+    let score = 0;
+    if (/\b(dv|dovi|dolby vision)\b/i.test(text)) score += 3;
+    else if (/\b(hdr|hdr10|hdr10\+)\b/i.test(text)) score += 2;
+    if (/\b(hevc|x265|h265)\b/i.test(text)) score += 1;
+    if (/\b10bit\b/i.test(text)) score += 1;
+    return score;
+}
+
+function getAudioWeight(text) {
+    if (/\b(atmos|truehd|dts-hd|dtsx|dts-x)\b/i.test(text)) return 3;
+    if (/\b(dd5\.1|dd\+5\.1|5\.1|7\.1|aac5\.1)\b/i.test(text)) return 2;
+    return 1;
+}
+
+function getLanguageWeight(text) {
+    if (/\b(heb|hebrew|israel|he-il|מדובב|עברית|תרגום|subs?)\b/i.test(text)) return 2;
+    return 0;
+}
+// ==========================================
+
 export default async function handler(req, res) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Access-Control-Allow-Origin',  '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -99,16 +126,12 @@ export default async function handler(req, res) {
     const clientUA = req.headers['user-agent'] || 'Stremio/4.4.156';
 
     console.log(`\n======================================================`);
-    console.log(`[ESAY DIAGNOSTIC] 🟢 בקשת סטרים חדשה התקבלה!`);
-    console.log(`[ESAY DIAGNOSTIC] 🌐 URL: ${req.url}`);
-    
+    console.log(`[ESAY DIAGNOSTIC] 🟢 בקשת סטרים חדשה!`);
+
     try {
         const urlParts  = req.url.split('?')[0].split('/');
         const streamIdx = urlParts.indexOf('stream');
-        if (streamIdx < 1 || streamIdx + 2 >= urlParts.length) {
-            console.error(`[ESAY DIAGNOSTIC] ❌ שגיאה: מבנה URL לא תקין.`);
-            return res.status(400).json({ streams: [] });
-        }
+        if (streamIdx < 1 || streamIdx + 2 >= urlParts.length) return res.status(400).json({ streams: [] });
 
         const userKey = urlParts[streamIdx - 1];
         const type    = urlParts[streamIdx + 1];
@@ -117,16 +140,16 @@ export default async function handler(req, res) {
         const idWithExt = rawIdWithExt;
         const id        = idWithExt.replace('.json', '');
 
+        // תוקן: חוק Kan-Box מחמיר לפי הדף המנחה (שמירת ה-type המקורי בערוצי לייב)
         if (type === 'tv' || type === 'channel') {
             const tvAddonUrl = process.env.TV_ADDON_URL;
             if (!tvAddonUrl) return res.status(200).json({ streams: [] });
             try {
                 const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-                const targetUrl  = `${cleanTvUrl}/stream/series/${idWithExt}`;
-                console.log(`[ESAY DIAGNOSTIC] 📺 ניתוב ישיר לערוץ חי: ${targetUrl}`);
+                // שימוש ב-{type} המקורי בלבד במקום 'series' כפי שהיה מקודם
+                const targetUrl  = `${cleanTvUrl}/stream/${type}/${idWithExt}`;
                 const headers    = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp, 'Accept': 'application/json, text/plain, */*' };
                 
-                const startTime = Date.now();
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 9500);
                 let tvRes;
@@ -138,7 +161,6 @@ export default async function handler(req, res) {
 
                 if (tvRes.ok) {
                     const tvData = await tvRes.json();
-                    console.log(`[ESAY DIAGNOSTIC] ✅ לייב עבר בהצלחה (${Date.now() - startTime}ms)`);
                     return res.status(200).json(tvData);
                 }
             } catch (e) {
@@ -152,51 +174,33 @@ export default async function handler(req, res) {
         const profile       = PROFILES[profileConfig] || PROFILES.friends_light;
         const addons        = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
         
-        console.log(`[ESAY DIAGNOSTIC] ⚙️ פרופיל: ${profileConfig} | תוספים לפניה: ${addons.length}`);
         if (addons.length === 0) return res.status(200).json({ streams: [] });
 
         const fetchFromAddon = async (baseUrl, customIdWithExt = null) => {
-            const startTime = Date.now();
             const controller    = new AbortController();
             const timeoutId     = setTimeout(() => controller.abort(), profile.timeoutMs);
             const cleanBaseUrl  = baseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
             const finalIdWithExt = customIdWithExt || idWithExt;
-            let forwardType = type;
             
-            if (baseUrl.includes('kan-box-addon.vercel.app') && (type === 'tv' || type === 'channel')) forwardType = 'series';
-            const targetUrl = `${cleanBaseUrl}/stream/${forwardType}/${finalIdWithExt}`;
+            // תוקן: גם סדרות VOD מול Kan-Box שומרות על ה-type שלהן לפי הדף המנחה
+            const targetUrl = `${cleanBaseUrl}/stream/${type}/${finalIdWithExt}`;
             
             const fetchHeaders = { 'User-Agent': clientUA };
             if (baseUrl.includes('kan-box-addon.vercel.app')) {
                 fetchHeaders['X-Forwarded-For'] = clientIp;
             }  
             
-            const reqTypeStr = customIdWithExt ? '(Search)' : '(ID)';
-            
             try {
                 const response = await fetch(targetUrl, { signal: controller.signal, headers: fetchHeaders });
-                const elapsed = Date.now() - startTime;
-                
-                if (!response.ok) {
-                    console.log(`[ESAY DIAGNOSTIC] ⚠️ שגיאת שרת ${response.status} מ-${cleanBaseUrl} ${reqTypeStr} אחרי ${elapsed}ms`);
-                    return [];
-                }
+                if (!response.ok) return [];
                 
                 const data = await response.json();
                 if (data && Array.isArray(data.streams)) {
                     data.streams.forEach(s => s._sourceBaseUrl = baseUrl);
-                    console.log(`[ESAY DIAGNOSTIC] ⏱️ תוסף ${cleanBaseUrl} ${reqTypeStr} סיים ב-${elapsed}ms (הביא ${data.streams.length} סטרימים)`);
                     return data.streams;
                 }
-                console.log(`[ESAY DIAGNOSTIC] ⏱️ תוסף ${cleanBaseUrl} ${reqTypeStr} סיים ב-${elapsed}ms (ללא תוצאות)`);
                 return [];
             } catch (err) { 
-                const elapsed = Date.now() - startTime;
-                if (err.name === 'AbortError' || err.type === 'aborted') {
-                    console.warn(`[ESAY DIAGNOSTIC] ⏳ TIMEOUT: תוסף ${cleanBaseUrl} ${reqTypeStr} נחתך בכוח אחרי ${elapsed}ms!`);
-                } else {
-                    console.error(`[ESAY DIAGNOSTIC] ❌ קריסה בתוסף ${cleanBaseUrl} ${reqTypeStr}: ${err.message}`);
-                }
                 return []; 
             } finally { 
                 clearTimeout(timeoutId); 
@@ -206,14 +210,10 @@ export default async function handler(req, res) {
         let promises = addons.map(url => fetchFromAddon(url));
 
         if (id.startsWith('tt')) {
-            console.log(`[ESAY DIAGNOSTIC] 🔎 מזהה IMDb - מתחיל הליך חיפוש טקסטואלי נלווה...`);
             const movieName = await getCleanMovieName(type, id);
             if (movieName) {
-                console.log(`[ESAY DIAGNOSTIC] 📝 שם לחיפוש שהתקבל: "${movieName}" - מריץ חיפושים`);
                 const textSearchPromises = addons.map(baseUrl => fetchFromAddon(baseUrl, `search=${encodeURIComponent(movieName)}.json`));
                 promises = promises.concat(textSearchPromises);
-            } else {
-                console.log(`[ESAY DIAGNOSTIC] ⚠️ לא נמצא שם טקסטואלי לחיפוש (Meta null)`);
             }
         }
 
@@ -221,8 +221,6 @@ export default async function handler(req, res) {
         const trackPromises = promises.map(p => p.then(val => { if (Array.isArray(val)) allStreams = allStreams.concat(val); return val; }).catch(() => {}));
         
         await Promise.allSettled(trackPromises);
-
-        console.log(`[ESAY DIAGNOSTIC] 📥 איסוף הסתיים. סה"כ סטרימים גולמיים: ${allStreams.length}`);
 
         const deduplicatedStreams = [];
         for (const stream of allStreams) {
@@ -244,8 +242,6 @@ export default async function handler(req, res) {
             if (!isDuplicate) deduplicatedStreams.push(stream);
         }
 
-        console.log(`[ESAY DIAGNOSTIC] 🔄 לאחר Deduplication (מחיקת כפילויות): ${deduplicatedStreams.length} נותרו.`);
-
         const topTierStreams = [];
         const fallbackStreams = [];
         for (const stream of deduplicatedStreams) {
@@ -260,8 +256,6 @@ export default async function handler(req, res) {
 
             (isTopTier ? topTierStreams : fallbackStreams).push(stream);
         }
-
-        console.log(`[ESAY DIAGNOSTIC] ✂️ סינון משקל/סידרים (${profileConfig}): Top Tier: ${topTierStreams.length} | Fallback: ${fallbackStreams.length}`);
 
         const vipStreams      = [];
         const standardStreams = [];
@@ -278,8 +272,6 @@ export default async function handler(req, res) {
             else if (rw === 2) buckets[`720p${sfx}`].push(s);
             else buckets[`sd${sfx}`].push(s);
         }
-
-        console.log(`[ESAY DIAGNOSTIC] 🪣 תכולת דליים: 4K[c:${buckets['4k_c'].length}, u:${buckets['4k_u'].length}] | 1080p[c:${buckets['1080p_c'].length}, u:${buckets['1080p_u'].length}]`);
 
         const isBigProfile = (profileConfig === 'everything' || profileConfig === 'friends_heavy');
         const quotas = isBigProfile
@@ -320,14 +312,13 @@ export default async function handler(req, res) {
         const missingSlots    = standardBudget - standardResult.length;
 
         if (missingSlots > 0 && fallbackStreams.length > 0) {
-            const addedFallbacks = fallbackStreams.slice(0, missingSlots);
-            finalCandidates.push(...addedFallbacks);
-            console.log(`[ESAY DIAGNOSTIC] 🛡️ חסרו משבצות. השלמתי ${addedFallbacks.length} תוצאות נוספות מרשת הביטחון.`);
+            finalCandidates.push(...fallbackStreams.slice(0, missingSlots));
         }
 
-        console.log(`[ESAY DIAGNOSTIC] ⚖️ מבצע מיון אבסולוטי (VIP>Res>Cache>Qual>Size) על ${finalCandidates.length} מועמדים.`);
-        
+        // 🌟 המיון האבסולוטי עם מנוע ה-Hyper Precision!
         finalCandidates.sort((a, b) => {
+            const textA = getTextForAnalysis(a); const textB = getTextForAnalysis(b);
+
             const vipA = isVIPSource(a); const vipB = isVIPSource(b);
             if (vipA !== vipB) return vipA ? -1 : 1;
 
@@ -337,8 +328,17 @@ export default async function handler(req, res) {
             const cA = isCached(a); const cB = isCached(b);
             if (cA !== cB) return cA ? -1 : 1;
 
-            const qA = getQualityWeight(getTextForAnalysis(a)); const qB = getQualityWeight(getTextForAnalysis(b));
+            const qA = getQualityWeight(textA); const qB = getQualityWeight(textB);
             if (qA !== qB) return qB - qA;
+
+            const vA = getVisualWeight(textA); const vB = getVisualWeight(textB);
+            if (vA !== vB) return vB - vA;
+
+            const aA = getAudioWeight(textA); const aB = getAudioWeight(textB);
+            if (aA !== aB) return aB - aA;
+
+            const lA = getLanguageWeight(textA); const lB = getLanguageWeight(textB);
+            if (lA !== lB) return lB - lA;
 
             if (!cA && !cB) {
                 const sA = getSeeders(a) ?? 0; const sB = getSeeders(b) ?? 0;
@@ -359,11 +359,15 @@ export default async function handler(req, res) {
             const isC         = isCached(stream);
             const position    = index + 1;
 
+            const text = getTextForAnalysis(stream);
+            const hasCacheKeywords = /torbox|\btb\b|comet|\bcached\b|\brd\+|elfhosted|elfcache|all-?debrid|\bad\+|premiumize|debrid-?link|stremthru/i.test(text);
+            const isDirectWeb = stream.url && stream.url.startsWith('http') && !hasCacheKeywords && !isUsenet(stream) && !stream.infoHash;
+
             let cleanName = (stream.name || '').replace(REGEX_BRACKETS, '').replace(REGEX_PARENS, '').replace(REGEX_DOWNLOAD, '');
             cleanName = cleanName.replace(/\n+/g, ' ').replace(/^[\s\-\|]+|[\s\-\|]+$/g, '').replace(/\s{2,}/g, ' ').trim();
             let cleanTitle = (stream.title || '').replace(REGEX_DOWNLOAD, '').trim();
 
-            let prefix = isVip ? 'מרשת דפדפן' : (isC ? 'זמין לצפייה' : 'דורש המתנה ואולי כניסה חוזרת');
+            let prefix = (isVip || isDirectWeb) ? 'מרשת דפדפן' : (isC ? 'זמין לצפייה' : 'דורש המתנה ואולי כניסה חוזרת');
             
             stream.name = `[#${position}] ${prefix} | ${cleanName}`;
             stream.title = `[#${position}]\n${cleanTitle}`;
@@ -372,8 +376,7 @@ export default async function handler(req, res) {
             return stream;
         });
 
-        console.log(`[ESAY DIAGNOSTIC] 🏁 הליך הסתיים! נשלחו ${finalSliced.length} סטרימים ללקוח. (הראשון ברשימה: ${finalSliced[0]?.name || 'N/A'})`);
-        console.log(`======================================================\n`);
+        console.log(`[ESAY DIAGNOSTIC] 🏁 סיום מוצלח. נשלחו ${finalSliced.length} תוצאות.`);
         return res.status(200).json({ streams: finalSliced });
     } catch (error) { 
         console.error('[ESAY DIAGNOSTIC] 💥 שגיאת קריסה כללית ב-Proxy:', error.stack || error);
