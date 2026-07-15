@@ -600,7 +600,7 @@ export default async function handler(req, res) {
                 prefix += ' (לנגן תומך)';
             }   
             stream.name = `[#${position}] ${prefix} | ${cleanName}`;
-            stream.title = `[#${position}]\n${cleanTitle}`;
+            stream.title = cleanTitle;
             // --- מנטרל הגבלות פנימיות של ממשק סטרימיו ---
             if (stream.behaviorHints) {
                 // חייבים למחוק כדי שסטרימיו-ווב יציג את התוצאה במקום להעלים אותה!
