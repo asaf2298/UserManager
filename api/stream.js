@@ -32,12 +32,16 @@ function isCached(stream) {
     if (text.includes('download') || text.includes('⬇️')) return false;
     
     const hasCacheKeywords = /torbox|\btb\b|comet|\bcached\b|\brd\+|elfhosted|elfcache|all-?debrid|\bad\+|premiumize|debrid-?link|stremthru/i.test(text);
+    
+    // תיקון Usenet: חייב מילת קאש מפורשת כדי להיחשב זמין לצפייה
+    if (isUsenet(stream)) {
+        return hasCacheKeywords;
+    }
+
     if (hasCacheKeywords) return true;
     if (stream.infoHash) return false;
     if (stream.url && (stream.url.startsWith('magnet:') || stream.url.toLowerCase().endsWith('.torrent') || stream.url.toLowerCase().endsWith('.nzb'))) return false;
     
-    if (isUsenet(stream)) return false;
-
     if (!stream.url) return false;
     if (stream.url.startsWith('http') || stream.url.startsWith('acestream')) return true;
     return false;
@@ -90,13 +94,10 @@ function getResWeight(stream) {
     return Math.max(...weights);
 }
 
-// ==========================================
-// 🚀 Hyper-Precision: מנוע שקלול טכנולוגיות
-// ==========================================
+// תוקן: כל משפחת ה-HDR מקבלת 2 נקודות שטוחות
 function getVisualWeight(text) {
     let score = 0;
-    if (/\b(dv|dovi|dolby vision)\b/i.test(text)) score += 3;
-    else if (/\b(hdr|hdr10|hdr10\+)\b/i.test(text)) score += 2;
+    if (/\b(dv|dovi|dolby vision|hdr|hdr10|hdr10\+)\b/i.test(text)) score += 2;
     if (/\b(hevc|x265|h265)\b/i.test(text)) score += 1;
     if (/\b10bit\b/i.test(text)) score += 1;
     return score;
@@ -112,7 +113,6 @@ function getLanguageWeight(text) {
     if (/\b(heb|hebrew|israel|he-il|מדובב|עברית|תרגום|subs?)\b/i.test(text)) return 2;
     return 0;
 }
-// ==========================================
 
 export default async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -140,13 +140,11 @@ export default async function handler(req, res) {
         const idWithExt = rawIdWithExt;
         const id        = idWithExt.replace('.json', '');
 
-        // תוקן: חוק Kan-Box מחמיר לפי הדף המנחה (שמירת ה-type המקורי בערוצי לייב)
         if (type === 'tv' || type === 'channel') {
             const tvAddonUrl = process.env.TV_ADDON_URL;
             if (!tvAddonUrl) return res.status(200).json({ streams: [] });
             try {
                 const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-                // שימוש ב-{type} המקורי בלבד במקום 'series' כפי שהיה מקודם
                 const targetUrl  = `${cleanTvUrl}/stream/${type}/${idWithExt}`;
                 const headers    = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp, 'Accept': 'application/json, text/plain, */*' };
                 
@@ -182,7 +180,6 @@ export default async function handler(req, res) {
             const cleanBaseUrl  = baseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
             const finalIdWithExt = customIdWithExt || idWithExt;
             
-            // תוקן: גם סדרות VOD מול Kan-Box שומרות על ה-type שלהן לפי הדף המנחה
             const targetUrl = `${cleanBaseUrl}/stream/${type}/${finalIdWithExt}`;
             
             const fetchHeaders = { 'User-Agent': clientUA };
@@ -220,7 +217,27 @@ export default async function handler(req, res) {
         let allStreams = [];
         const trackPromises = promises.map(p => p.then(val => { if (Array.isArray(val)) allStreams = allStreams.concat(val); return val; }).catch(() => {}));
         
-        await Promise.allSettled(trackPromises);
+        // שעון העצר החכם: 5.5 שניות מקסימום לבקשה הראשונית כדי למנוע טעינה אינסופית
+        // 1. שעון עצר ראשוני: מחכים 5.5 שניות כדי לראות אם יש תשובות מהירות
+        const INITIAL_WAIT_MS = 5500;
+        await Promise.race([
+            Promise.allSettled(trackPromises),
+            new Promise(resolve => setTimeout(resolve, INITIAL_WAIT_MS))
+        ]);
+
+        // 2. בדיקת מלאי חכמה: אם יש לנו פחות מקורות ממה שהפרופיל צריך, ננצל את יתרת הזמן!
+        if (allStreams.length < (profile.maxResults / 2)) {
+            const remainingTime = profile.timeoutMs - INITIAL_WAIT_MS;
+            if (remainingTime > 0) {
+                console.log(`[ESAY DIAGNOSTIC] ⏳ התקבלו רק ${allStreams.length} סטרימים ב-5.5 שניות. מנצל את יתרת הזמן ממתין ${remainingTime}ms נוספים...`);
+                await Promise.race([
+                    Promise.allSettled(trackPromises),
+                    new Promise(resolve => setTimeout(resolve, remainingTime))
+                ]);
+            }
+        } else {
+            console.log(`[ESAY DIAGNOSTIC] ⚡ התקבלו ${allStreams.length} סטרימים ב-5.5 שניות. מדלג על יתרת ההמתנה ורץ למיון!`);
+        }
 
         const deduplicatedStreams = [];
         for (const stream of allStreams) {
@@ -315,7 +332,6 @@ export default async function handler(req, res) {
             finalCandidates.push(...fallbackStreams.slice(0, missingSlots));
         }
 
-        // 🌟 המיון האבסולוטי עם מנוע ה-Hyper Precision!
         finalCandidates.sort((a, b) => {
             const textA = getTextForAnalysis(a); const textB = getTextForAnalysis(b);
 
