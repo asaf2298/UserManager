@@ -1,9 +1,12 @@
 import fetch from 'node-fetch';
+import http from 'http';
 import https from 'https';
 import { getCleanMovieName } from './search.js';
 
-// סוכן ייעודי (Reusable) שעוקף תעודות אבטחה בעייתיות, ישומש רק לתוספים מוכרים כבעייתיים
-const insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
+// סוכנים ייעודיים לעקיפת תעודות בעייתיות - תומך גם בהפניות HTTP וגם HTTPS
+const httpAgent = new http.Agent();
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+const dynamicAgent = (_parsedURL) => _parsedURL.protocol === 'http:' ? httpAgent : httpsAgent;
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -15,12 +18,13 @@ async function fetchWithTimeout(url, options, timeoutMs) {
     }
 }
 
-const ALLOWED_LANGS = new Set([
-    'he', 'heb', 'hebrew', 'iw', 'he-il', 'עברית',
-    'en', 'eng', 'english', 'en-us', 'en-gb',
-    'ru', 'rus', 'russian',
-    'submaker', 'make hebrew', 'forced', 'hi'
-]);
+// הרשימה המלאה והעשירה לזיהוי כתוביות רלוונטיות
+const ALLOWED_LANGS = [
+    'he', 'heb', 'hebrew', 'iw', 'he-il', 'עברית',
+    'en', 'eng', 'english', 'en-us', 'en-gb',
+    'ru', 'rus', 'russian',
+    'submaker', 'make hebrew', 'forced', 'hi'
+];
 
 export default async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -58,15 +62,14 @@ export default async function handler(req, res) {
             
             const fetchOptions = { headers };
             
-            // הפעלת מעקף ה-SSL אך ורק מול ספקים ידועים כבעייתיים
+            // שימוש בסוכן הדינמי למניעת קריסות פרוטוקול בהפניות פנימיות
             if (cleanBaseUrl.includes('sub.scary.network')) {
-                fetchOptions.agent = insecureHttpsAgent;
+                fetchOptions.agent = dynamicAgent;
             }
 
             const reqTypeStr = isSearch ? '(Text Search)' : '(IMDb ID)';
 
             try {
-                // זמן מקסימלי בטוח בשרת Vercel
                 const response = await fetchWithTimeout(targetUrl, fetchOptions, 9000);
                 const elapsed = Date.now() - startTime;
 
@@ -86,7 +89,7 @@ export default async function handler(req, res) {
             } catch (err) {
                 const elapsed = Date.now() - startTime;
                 if (err.name === 'AbortError' || err.type === 'aborted') {
-                    console.warn(`[ESAY SUBTITLES] ⏳ TIMEOUT: נחתך בכוח ${cleanBaseUrl} ${reqTypeStr} אחרי זמן מקסימלי (${elapsed}ms)`);
+                    console.warn(`[ESAY SUBTITLES] ⏳ TIMEOUT: נחתך בכוח ${cleanBaseUrl} ${reqTypeStr} אחרי (${elapsed}ms)`);
                 } else {
                     console.error(`[ESAY SUBTITLES] ❌ קריסה ב-${cleanBaseUrl} ${reqTypeStr}: ${err.message}`);
                 }
@@ -96,11 +99,17 @@ export default async function handler(req, res) {
 
         let promises = addons.map(url => fetchSubtitleAddon(url, idWithExt, false));
 
-        if (id.startsWith('tt')) {
+        // הוספנו תמיכה גם ב-TMDB וגם לוגים שיסבירו למה החיפוש טקסט רץ או נדחה
+        if (id.startsWith('tt') || id.startsWith('tmdb:')) {
+            console.log(`[ESAY SUBTITLES] 🔍 מנסה לבצע גיבוי חיפוש טקסט עבור ID: ${id}`);
             const cleanName = await getCleanMovieName(type, id);
+            
             if (cleanName) {
+                console.log(`[ESAY SUBTITLES] 🔤 TMDB זיהה את השם: "${cleanName}". מריץ גל חיפושים שני...`);
                 const searchPromises = addons.map(url => fetchSubtitleAddon(url, `search=${encodeURIComponent(cleanName)}.json`, true));
                 promises = promises.concat(searchPromises);
+            } else {
+                console.log(`[ESAY SUBTITLES] ⚠️ פונקציית העזר לא מצאה שם תקין ב-TMDB. חיפוש הטקסט מבוטל.`);
             }
         }
 
@@ -117,7 +126,7 @@ export default async function handler(req, res) {
 
         allSubs = allSubs.filter(sub => {
             const lang = (sub.lang || '').toLowerCase();
-            return ALLOWED_LANGS.some(allowed => lang.includes(allowed)) || lang.includes('submaker');
+            return ALLOWED_LANGS.some(allowed => lang.includes(allowed));
         });
 
         const seenUrls = new Set();
