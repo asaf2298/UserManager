@@ -41,9 +41,15 @@ export default async function handler(req, res) {
                 if (tvRes.ok) {
                     const tvManifest = await tvRes.json();
                     const catalogs = tvManifest?.catalogs || [];
+                    
                     if (catalogs.length > 0) {
+                        // שומרים את הקטלוג הראשון שיופיע בראש הרשימה
                         firstKanboxCatalog = catalogs[0];
-                        restKanboxCatalogs = catalogs.slice(1).map(cat => ({
+                        
+                        // לוקחים את שאר הקטלוגים אבל חותכים החוצה את 2 האחרונים ברשימה
+                        const remainingCatalogs = catalogs.slice(1, -2);
+                        
+                        restKanboxCatalogs = remainingCatalogs.map(cat => ({
                             ...cat,
                             name: cat.name.includes('Israeli') ? cat.name : `Israeli - ${cat.name}`
                         }));
@@ -76,13 +82,13 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.4.8", // שינוי גרסה מחייב ניקוי קאש בצד של סטרימיו
+            version: "2.4.9", // העלאת גרסה כדי להכריח את סטרימיו לרענן את ה-Cache של המניפסט
             name: `Esay - ${userConfig.name || userKey}`,
             description: "Esay Aggregator with Unified Search & LiveTV Israel",
             resources: ["stream", "subtitles", "catalog", "meta"],
             types: ["movie", "series", "anime", "tv", "channel"],
             catalogs: [
-                ...(firstKanboxCatalog ? [firstKanboxCatalog] : []),
+                ...(firstKanboxCatalog ? [firstKanboxCatalog] : []), // ה-First ממוקם ראשון לחלוטין
                 ...unifiedSearchCatalogs,
                 ...aioCatalogs,
                 ...restKanboxCatalogs
