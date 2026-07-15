@@ -110,7 +110,7 @@ function getAudioWeight(text) {
 }
 
 function getLanguageWeight(text) {
-    if (/\b(heb|hebrew|israel|he-il|מדובב|עברית|תרגום|subs?)\b/i.test(text)) return 2;
+    if (/\b(heb|hebrew|israel|he-il|מדובב|עברית|תרגום)\b/i.test(text)) return 2;
     return 0;
 }
 
