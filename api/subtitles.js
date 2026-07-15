@@ -63,7 +63,7 @@ export default async function handler(req, res) {
             const reqTypeStr = isSearch ? '(Text Search)' : '(IMDb ID)';
 
             try {
-                const response = await fetchWithTimeout(targetUrl, { headers }, 4650);
+                const response = await fetchWithTimeout(targetUrl, { headers }, 9000);
                 const elapsed = Date.now() - startTime;
 
                 if (!response.ok) {
