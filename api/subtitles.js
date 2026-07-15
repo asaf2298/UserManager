@@ -1,11 +1,15 @@
 import fetch from 'node-fetch';
-import { getCleanMovieName } from './search.js'; // ייבוא מנוע חילוץ השמות שהכנו
+import https from 'https';
+import { getCleanMovieName } from './search.js'; 
+
+// הוספת סוכן שמתעלם משגיאות של תעודות אבטחה חינמיות (כמו של sub.scary.network)
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        return await fetch(url, { ...options, signal: controller.signal });
+        return await fetch(url, { ...options, agent: httpsAgent, signal: controller.signal });
     } finally {
         clearTimeout(timeoutId);
     }
@@ -26,7 +30,6 @@ function isAllowedLang(lang, title) {
 }
 
 export default async function handler(req, res) {
-    // מניעת קאש מ-Vercel
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -47,7 +50,6 @@ export default async function handler(req, res) {
         const subtitleUrls = (process.env.SUBTITLE_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
         if (subtitleUrls.length === 0) return res.status(200).json({ subtitles: [] });
 
-        // פונקציית שליפה שמקבלת גם פרמטר האם מדובר בחיפוש טקסטואלי
         const fetchSubtitleAddon = async (baseUrl, customQuery, isSearch) => {
             const startTime = Date.now();
             const cleanBaseUrl = baseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
@@ -85,10 +87,8 @@ export default async function handler(req, res) {
             }
         };
 
-        // 1. יצירת בקשות מבוססות ID (עדיפות עליונה)
         let promises = subtitleUrls.map(url => fetchSubtitleAddon(url, id, false));
 
-        // 2. יצירת בקשות מבוססות טקסט (חיפוש נלווה כ-Fallback)
         if (id.startsWith('tt')) {
             const movieName = await getCleanMovieName(type, id);
             if (movieName) {
@@ -104,7 +104,6 @@ export default async function handler(req, res) {
         for (const r of results) {
             if (r.status === 'fulfilled' && r.value && Array.isArray(r.value.subtitles)) {
                 r.value.subtitles.forEach(sub => {
-                    // הזרקת דגל סודי כדי לדעת מאיפה הגיעה הכתובית לטובת המיון בהמשך
                     sub._isTextSearch = r.value.isSearch;
                     allSubs.push(sub);
                 });
@@ -115,7 +114,6 @@ export default async function handler(req, res) {
 
         console.log(`[ESAY SUBTITLES] 📥 נאספו סה"כ ${allSubs.length} כתוביות חוקיות מכל המקורות.`);
 
-        // 3. ניקוי כפילויות חכם (ID דורס Text Search במקרה של כפילות זהה)
         const uniqueSubsMap = new Map();
         for (const sub of allSubs) {
             const lang = (sub.lang || '').toLowerCase();
@@ -124,7 +122,6 @@ export default async function handler(req, res) {
             if (!uniqueSubsMap.has(key)) {
                 uniqueSubsMap.set(key, sub);
             } else {
-                // אם הכתובית קיימת מחיפוש טקסט, אבל קיבלנו אותה גם מ-ID, נדרוס וניתן עדיפות ל-ID!
                 const existingSub = uniqueSubsMap.get(key);
                 if (existingSub._isTextSearch === true && sub._isTextSearch === false) {
                     uniqueSubsMap.set(key, sub);
@@ -135,27 +132,22 @@ export default async function handler(req, res) {
         let uniqueSubs = Array.from(uniqueSubsMap.values());
         console.log(`[ESAY SUBTITLES] 🔄 אחרי Deduplication: נותרו ${uniqueSubs.length} כתוביות יחודיות.`);
 
-        // 4. מיון מוחלט: עברית למעלה > ID למעלה > חיפוש טקסטואלי למטה
         uniqueSubs.sort((a, b) => {
             const langA = (a.lang || '').toLowerCase();
             const langB = (b.lang || '').toLowerCase();
             const isHebA = ['he', 'heb', 'hebrew', 'iw', 'עברית'].includes(langA);
             const isHebB = ['he', 'heb', 'hebrew', 'iw', 'עברית'].includes(langB);
             
-            // קודם כל השפה קובעת (עברית עליונה לכל דבר אחר)
             if (isHebA && !isHebB) return -1; 
             if (!isHebA && isHebB) return 1;
 
-            // שובר שוויון בשפה: עדיפות לחיפוש ID על פני חיפוש טקסטואלי
             if (a._isTextSearch !== b._isTextSearch) {
-                // -1 אומר שיוקדם, אז כתובית ש-isTextSearch שלה הוא false (כלומר ID) תנצח ותעלה למעלה
                 return a._isTextSearch ? 1 : -1; 
             }
 
             return 0;
         });
 
-        // 5. מחיקת הדגל הסודי לפני שליחה לסטרימיו (מנקים עקבות מהמנוע שלנו)
         uniqueSubs = uniqueSubs.map(sub => {
             delete sub._isTextSearch;
             return sub;
