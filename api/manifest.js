@@ -11,8 +11,17 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 }
 
 export default async function handler(req, res) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Access-Control-Allow-Origin', '*');
     if (req.method === 'OPTIONS') return res.status(200).end();
+
+    const clientUA = req.headers['user-agent'] || 'Stremio/4.4.156';
+    const forwardedIps = req.headers['x-forwarded-for'] || '';
+    const clientIp = forwardedIps ? forwardedIps.split(',')[0].trim() : (req.socket?.remoteAddress || '');
+    
+    // ניהול מוקפד של Headers
+    const kanboxHeaders = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp };
+    const standardHeaders = { 'User-Agent': clientUA };
 
     try {
         const urlParts = req.url.split('?')[0].split('/');
@@ -28,7 +37,7 @@ export default async function handler(req, res) {
         if (tvAddonUrl) {
             try {
                 const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-                const tvRes = await fetchWithTimeout(`${cleanTvUrl}/manifest.json`, {}, 4600);
+                const tvRes = await fetchWithTimeout(`${cleanTvUrl}/manifest.json`, { headers: kanboxHeaders }, 7500);
                 if (tvRes.ok) {
                     const tvManifest = await tvRes.json();
                     const catalogs = tvManifest?.catalogs || [];
@@ -48,7 +57,7 @@ export default async function handler(req, res) {
         if (userConfig.catalogBase) {
             try {
                 const cleanCatalogBase = userConfig.catalogBase.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-                const catRes = await fetchWithTimeout(`${cleanCatalogBase}/manifest.json`, {}, 4600);
+                const catRes = await fetchWithTimeout(`${cleanCatalogBase}/manifest.json`, { headers: standardHeaders }, 7500);
                 if (catRes.ok) {
                     const catManifest = await catRes.json();
                     if (catManifest?.catalogs) {
@@ -67,7 +76,7 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.4.6",
+            version: "2.4.8", // שינוי גרסה מחייב ניקוי קאש בצד של סטרימיו
             name: `Esay - ${userConfig.name || userKey}`,
             description: "Esay Aggregator with Unified Search & LiveTV Israel",
             resources: ["stream", "subtitles", "catalog", "meta"],
