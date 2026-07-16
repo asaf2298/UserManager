@@ -10,7 +10,9 @@
     { "source": "/:user/stream/:type/:id.json", "destination": "/api/stream" },
     { "source": "/:user/stream/:type/:id", "destination": "/api/stream" },
     { "source": "/:user/subtitles/:type/:id.json", "destination": "/api/subtitles" },
-    { "source": "/:user/subtitles/:type/:id", "destination": "/api/subtitles" }
+    { "source": "/:user/subtitles/:type/:id", "destination": "/api/subtitles" },
+    { "source": "/:user/subtitles/:type/:id/:extra*.json", "destination": "/api/subtitles" },
+    { "source": "/:user/subtitles/:type/:id/:extra*", "destination": "/api/subtitles" }
   ],
   "headers": [
     {
