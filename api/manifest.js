@@ -82,9 +82,10 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.4.9", // העלאת גרסה כדי להכריח את סטרימיו לרענן את ה-Cache של המניפסט
+            version: "2.5.0", // הקפצת גרסה קריטית למחיקת המטמון בסטרימיו
             name: `Esay - ${userConfig.name || userKey}`,
             description: "Esay Aggregator with Unified Search & LiveTV Israel",
+            idPrefixes: ["tt", "tmdb"], // התוספת החיונית כדי שסטרימיו יאפשר שליחת בקשות כתוביות
             resources: ["stream", "subtitles", "catalog", "meta"],
             types: ["movie", "series", "anime", "tv", "channel"],
             catalogs: [
