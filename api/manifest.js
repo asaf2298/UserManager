@@ -85,7 +85,13 @@ export default async function handler(req, res) {
             version: "2.5.0", // הקפצת גרסה קריטית למחיקת המטמון בסטרימיו
             name: `Esay - ${userConfig.name || userKey}`,
             description: "Esay Aggregator with Unified Search & LiveTV Israel",
-            idPrefixes: ["tt", "tmdb"], // התוספת החיונית כדי שסטרימיו יאפשר שליחת בקשות כתוביות
+            // הוספנו כאן את כל הקידומות המבוקשות:
+            // tt/tmdb: סטנדרט
+            // il_: ערוצים ישראלים
+            // mal/kitsu: אנימה
+            // tvdb: סדרות ישנות/אחרות
+            // http/https: סטרימינג ישיר
+            idPrefixes: ["tt", "tmdb", "il_", "mal", "kitsu", "tvdb", "http", "https"],
             resources: ["stream", "subtitles", "catalog", "meta"],
             types: ["movie", "series", "anime", "tv", "channel"],
             catalogs: [
