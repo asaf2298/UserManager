@@ -156,11 +156,11 @@ export default async function handler(req, res) {
         const seenSubs = new Set();
 
         uniqueSubs.forEach((sub, index) => {
-            // 1. השמדת כתוביות ללא לינק (קריטי ליציבות סטרימיו)
+            // 1. חסימת כתוביות ללא לינק
             if (!sub.url) return;
 
-            // 2. המרת שפות לתקן אחיד (heb, eng, rus)
-            const l = (sub.lang || '').toLowerCase().trim();
+            // 2. המרת שפות למזהים מדויקים בלבד
+            const l = String(sub.lang || '').toLowerCase().trim();
             let lang = 'heb';
             let displayType = ''; 
 
@@ -174,40 +174,44 @@ export default async function handler(req, res) {
                     displayType = ' [Auto-Translated]';
                 }
             }
-            sub.lang = lang;
 
-            // 3. מניעת כפילויות (אותו לינק + אותה שפה)
-            const subKey = `${sub.url}|${sub.lang}`;
+            // 3. מניעת כפילויות לינקים
+            const subKey = `${sub.url}|${lang}`;
             if (seenSubs.has(subKey)) return;
             seenSubs.add(subKey);
 
-            // 4. עיצוב סופי לממשק
+            // 4. בניית מחרוזות בטוחות לממשק 
             const provider = sub._providerName || 'Esay Sub';
-            const safeId = (sub.id || '').replace(/[^a-zA-Z0-9]/g, '').substring(0, 10);
-            sub.id = `esay_${index}_${safeId}`;
+            const originalId = String(sub.id || `esay${index}`);
+            const safeId = originalId.replace(/[^a-zA-Z0-9]/g, '').substring(0, 10);
             
             let warning = (sub.behaviorHints?.notWebReady) ? ' ⚠️ נגן חיצוני' : '';
-            sub.title = `${sub.title || 'כתובית'}${displayType} [${provider}]${warning}`;
+            // ניקוי ירידות שורה שעלולות לשבור את הממשק של סטרימיו
+            const rawTitle = String(sub.title || 'כתובית').replace(/\n+/g, ' ').trim();
+            const finalTitle = `${rawTitle}${displayType} [${provider}]${warning}`;
 
-            delete sub._isTextSearch;
-            delete sub._providerName;
-            delete sub._sourceBaseUrl;
+            // === 🚀 אובייקט סטרילי: רק מה שסטרימיו דורש, בלי שום זבל! ===
+            const strictlyCompliantSub = {
+                id: `esay_${index}_${safeId}`,
+                url: String(sub.url),
+                lang: lang,
+                title: finalTitle
+            };
             
-            cleanedSubs.push(sub);
+            cleanedSubs.push(strictlyCompliantSub);
         });
 
-        // 5. סידור חכם: עברית ראשונה > אנגלית > רוסית. ותעדוף מזהה אמיתי על חיפוש מילולי.
+        // 5. סידור חכם: עברית ראשונה > אנגלית > רוסית.
         cleanedSubs.sort((a, b) => {
             const getScore = (l) => l === 'heb' ? 3 : (l === 'eng' ? 2 : (l === 'rus' ? 1 : 0));
             const scoreA = getScore(a.lang);
             const scoreB = getScore(b.lang);
             
             if (scoreA !== scoreB) return scoreB - scoreA;
-            if (a._isTextSearch !== b._isTextSearch) return a._isTextSearch ? 1 : -1;
             return 0;
         });
 
-        console.log(`[ESAY SUBTITLES] 🏁 הליך הסתיים. נשלחו ${cleanedSubs.length} כתוביות מסודרות ללקוח.\n`);
+        console.log(`[ESAY SUBTITLES] 🏁 הליך הסתיים. נשלחו ${cleanedSubs.length} כתוביות סטריליות ללקוח.\n`);
         return res.status(200).json({ subtitles: cleanedSubs });
 
     } catch (error) {
