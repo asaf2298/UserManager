@@ -516,14 +516,14 @@ export default async function handler(req, res) {
         const resCount = isLargeProfile ? 2 : 1;
 
         // חילוץ VIPs ראשונים כדי שלא יתערבבו בשאר הבריכות
-        const vipStreams = safeCandidates.filter(s => isVIPSource(s));
+        const nonVipStreams = safeCandidates.filter(s => !isVIPSource(s));
         
         const poolDirectWeb = [];
         const poolUncached4K = [];
         const poolUncached1080p = [];
         const poolMain = [];
 
-        for (const stream of safeCandidates) {
+        for (const stream of nonVipStreams) {
             // התיקון הקריטי: אם זה VIP, אנחנו מדלגים עליו כי כבר שמרנו אותו ב-vipStreams
             if (isVIPSource(stream)) continue;
             
