@@ -51,11 +51,15 @@ export default async function handler(req, res) {
         if (subIdx < 1 || subIdx + 2 >= urlParts.length) return res.status(400).json({ subtitles: [] });
 
         const type = urlParts[subIdx + 1];
-        let rawIdWithExt = urlParts[subIdx + 2];
-        if (rawIdWithExt.includes('%')) rawIdWithExt = decodeURIComponent(rawIdWithExt);
-        const idWithExt = rawIdWithExt;
-        const id = idWithExt.replace('.json', '');
-        console.log(`[ESAY SUBTITLES] 🔎 חולץ מזהה: ${id} | סוג תוכן: ${type}`);
+        
+        // במקום לחלץ רק את ה-ID, אנחנו לוקחים את כל "הזנב" שסטרימיו שלח (כולל ה-Extra)
+        const remainingParts = urlParts.slice(subIdx + 2);
+        let fullQueryPath = remainingParts.join('/'); 
+        if (fullQueryPath.includes('%')) fullQueryPath = decodeURIComponent(fullQueryPath);
+        
+        // אנחנו חלצים גם את ה-ID הנקי כדי שנוכל להשתמש בו בגיבוי של TMDB
+        const id = remainingParts[0].replace('.json', '');
+        console.log(`[ESAY SUBTITLES] 🔎 חולץ מזהה: ${id} | סוג תוכן: ${type} | נתיב מלא לספקים: ${fullQueryPath}`);
         
         const addonUrlsStr = process.env.SUBTITLE_URLS || '';
         const addons = addonUrlsStr.split('|||').map(u => u.trim()).filter(Boolean);
@@ -94,6 +98,14 @@ export default async function handler(req, res) {
                     return { subtitles: [], isSearch, calculatedProvider };
                 }
                 const data = await response.json();
+                // --- מרגל הלוגים החדש שלנו ---
+                if (data.subtitles && data.subtitles.length > 0) {
+                    // נבדוק את הכתובית הראשונה שחזרה כדגימה
+                    const sample = data.subtitles[0];
+                    console.log(`[ESAY DEBUG] 🕵️ ספק: ${calculatedProvider}`);
+                    console.log(`[ESAY DEBUG] 🔍 דגימת שדות:`, JSON.stringify(sample, null, 2));
+                }
+                // -----------------------------
                 const subCount = data.subtitles ? data.subtitles.length : 0;
                 console.log(`[ESAY SUBTITLES] ⏱️ תוסף ${cleanBaseUrl} ${reqTypeStr} סיים ב-${elapsed}ms (הביא ${subCount} כתוביות במקור)`);
                 return { subtitles: data.subtitles || [], isSearch, calculatedProvider };
@@ -108,7 +120,7 @@ export default async function handler(req, res) {
             }
         };
 
-        let promises = addons.map(url => fetchSubtitleAddon(url, idWithExt, false));
+        let promises = addons.map(url => fetchSubtitleAddon(url, fullQueryPath, false));
 
         if (id.startsWith('tt') || id.startsWith('tmdb:')) {
             console.log(`[ESAY SUBTITLES] 🔍 מנסה לבצע גיבוי חיפוש טקסט עבור ID: ${id}`);
