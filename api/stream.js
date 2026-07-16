@@ -1,6 +1,3 @@
-// api/stream.js
-// Adapter של Stremio: Profiles + Quotas/Slicing + Formatting
-// כל ה-Fetch/Dedup/Sort הועברו ל-lib/streamEngine.js (אגנוסטי)
 import fetch from 'node-fetch';
 import { fetchAndSortStreams } from '../lib/streamEngine.js';
 import {
@@ -152,7 +149,7 @@ function formatForStremio(streams) {
     delete stream.description;
 
     const keysToDelete = [
-      '_sourceBaseUrl', '_text', '_sizeGB', '_isCached', '_isUsenet',
+      '_sourceBaseUrl', '_text', '_sizeGB', '_effectiveSizeGB', '_isEpisodeQuery', '_isCached', '_isUsenet',
       '_isVip', '_seeders', '_resWeight', '_qualityWeight',
       '_visualWeight', '_audioWeight', '_langWeight', '_weightTier'
     ];
