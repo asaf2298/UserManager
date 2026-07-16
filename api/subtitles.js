@@ -38,6 +38,7 @@ function isAllowedLang(rawLang) {
 
 export default async function handler(req, res) {
     console.log(`[ESAY SUBTITLES] 🟢 NEW REQUEST DETECTED: ${req.url}`); 
+    console.log(`[ESAY RAW REQUEST] URL: ${req.url} | Headers: ${JSON.stringify(req.headers['user-agent'])}`);
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -183,7 +184,7 @@ export default async function handler(req, res) {
             } else {
                 lang = 'heb';
                 if (l.includes('make') || l.includes('submaker')) {
-                    displayType = ' [Auto-Translated]';
+                    displayType = ' [AI 🤖]';
                 }
             }
 
