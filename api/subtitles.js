@@ -17,12 +17,28 @@ async function fetchWithTimeout(url, options, timeoutMs) {
     }
 }
 
-const ALLOWED_LANGS = [
-    'he', 'heb', 'hebrew', 'iw', 'he-il', 'עברית',
-    'en', 'eng', 'english', 'en-us', 'en-gb',
-    'ru', 'rus', 'russian',
-    'submaker', 'make hebrew', 'forced', 'hi'
-];
+// מערכת זיהוי שפות הרמטית (מונעת באג שבו "en" מאשר "french")
+function isAllowedLang(rawLang) {
+    if (!rawLang) return false;
+    const l = rawLang.toLowerCase().trim();
+    
+    // התאמה מדויקת בלבד (Exact Match)
+    const exactMatches = [
+        'he', 'heb', 'hebrew', 'iw', 'he-il', 'עברית',
+        'ru', 'rus', 'russian',
+        'en', 'eng', 'english', 'en-us', 'en-gb',
+        'submaker', 'make hebrew', 'forced'
+    ];
+    
+    if (exactMatches.includes(l)) return true;
+    
+    // התאמות חלקיות בטוחות בלבד
+    if (l.includes('heb') || l.includes('עברית')) return true;
+    if (l.includes('rus')) return true;
+    if (l.startsWith('en ') || l.startsWith('eng ')) return true;
+    
+    return false;
+}
 
 export default async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -52,7 +68,6 @@ export default async function handler(req, res) {
             const startTime = Date.now();
             const cleanBaseUrl = baseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
             
-            // תיקון ה-404 החשוב: מניעת כפילות של .json
             const cleanQuery = customQuery.replace(/\.json$/, '');
             const targetUrl = `${cleanBaseUrl}/subtitles/${type}/${cleanQuery}.json`;
 
@@ -91,7 +106,7 @@ export default async function handler(req, res) {
                 const data = await response.json();
                 
                 const subCount = data.subtitles ? data.subtitles.length : 0;
-                console.log(`[ESAY SUBTITLES] ⏱️ תוסף ${cleanBaseUrl} ${reqTypeStr} סיים ב-${elapsed}ms (הביא ${subCount} כתוביות)`);
+                console.log(`[ESAY SUBTITLES] ⏱️ תוסף ${cleanBaseUrl} ${reqTypeStr} סיים ב-${elapsed}ms (הביא ${subCount} כתוביות במקור)`);
                 
                 return { subtitles: data.subtitles || [], isSearch, calculatedProvider };
             } catch (err) {
@@ -124,6 +139,10 @@ export default async function handler(req, res) {
         
         const seenUrls = new Set();
         let uniqueSubs = [];
+        
+        // משתני אבחון (Diagnostics) להדפסה
+        const droppedLangs = {};
+        const keptLangs = {};
 
         for (const res of results) {
             if (res.status === 'fulfilled' && res.value.subtitles.length > 0) {
@@ -134,31 +153,51 @@ export default async function handler(req, res) {
                     
                     if (sub.url && seenUrls.has(sub.url)) continue;
                     
-                    const lang = (sub.lang || '').toLowerCase();
-                    const isAllowed = ALLOWED_LANGS.some(allowed => lang.includes(allowed));
+                    const langStr = (sub.lang || 'unknown').toLowerCase().trim();
                     
-                    if (isAllowed) {
+                    // בדיקת שפה נוקשה
+                    if (isAllowedLang(langStr)) {
                         if (sub.url) seenUrls.add(sub.url);
+                        keptLangs[langStr] = (keptLangs[langStr] || 0) + 1;
                         
                         sub._isTextSearch = isSearch;
                         sub._providerName = (sub.id && sub.id.includes('opensubtitles')) ? 'OpenSubtitles' : calculatedProvider;
                         
                         uniqueSubs.push(sub);
+                    } else {
+                        // מעקב אחרי שפות שסוננו
+                        droppedLangs[langStr] = (droppedLangs[langStr] || 0) + 1;
                     }
                 }
             }
         }
 
+        // הדפסת לוגים מפורטים (Diagnostics)
+        console.log(`\n[ESAY DIAGNOSTIC] 📊 דו"ח סינון שפות:`);
+        console.log(`✅ שפות שאושרו ונשמרו:`, keptLangs);
+        console.log(`🚫 שפות שנחסמו ונמחקו:`, droppedLangs);
+
+        // מערכת דירוג מדויקת: עברית (3) > רוסית (2) > אנגלית (1)
         uniqueSubs.sort((a, b) => {
             const langA = (a.lang || '').toLowerCase();
             const langB = (b.lang || '').toLowerCase();
 
-            const isHebA = langA.includes('heb') || langA.includes('עברית');
-            const isHebB = langB.includes('heb') || langB.includes('עברית');
+            const getScore = (l) => {
+                if (l.includes('heb') || l.includes('עברית') || l === 'he') return 3;
+                if (l.includes('rus') || l === 'ru') return 2;
+                if (l.includes('en') || l.includes('eng')) return 1;
+                return 0;
+            };
 
-            if (isHebA && !isHebB) return -1;
-            if (!isHebA && isHebB) return 1;
+            const scoreA = getScore(langA);
+            const scoreB = getScore(langB);
 
+            // מיון לפי ניקוד השפה הגבוה ביותר
+            if (scoreA !== scoreB) {
+                return scoreB - scoreA;
+            }
+
+            // שובר שוויון: כתוביות שנמצאו לפי ID רשמי עדיפות על חיפוש טקסט
             if (a._isTextSearch !== b._isTextSearch) {
                 return a._isTextSearch ? 1 : -1;
             }
@@ -166,6 +205,7 @@ export default async function handler(req, res) {
             return 0;
         });
 
+        // עיצוב התצוגה הסופית
         uniqueSubs = uniqueSubs.map(sub => {
             const provider = sub._providerName || 'Esay Sub';
             const originalTitle = sub.title ? sub.title.trim() : '';
@@ -182,7 +222,7 @@ export default async function handler(req, res) {
             return sub;
         });
 
-        console.log(`[ESAY SUBTITLES] 🏁 הליך הסתיים. נשלחו ${uniqueSubs.length} כתוביות מסודרות ללקוח.`);
+        console.log(`[ESAY SUBTITLES] 🏁 הליך הסתיים. נשלחו ${uniqueSubs.length} כתוביות מסודרות ללקוח.\n`);
         return res.status(200).json({ subtitles: uniqueSubs });
 
     } catch (error) {
