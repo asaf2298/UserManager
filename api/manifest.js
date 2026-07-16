@@ -92,7 +92,16 @@ export default async function handler(req, res) {
             // tvdb: סדרות ישנות/אחרות
             // http/https: סטרימינג ישיר
             idPrefixes: ["tt", "tmdb", "il_", "mal", "kitsu", "tvdb", "http", "https"],
-            resources: ["stream", "subtitles", "catalog", "meta"],
+            resources: [
+                "stream", 
+                "catalog", 
+                "meta",
+                {
+                    name: "subtitles",
+                    types: ["movie", "series", "anime"], // סטרימיו יבקש כתוביות רק עבור התוכן הזה!
+                    idPrefixes: ["tt", "tmdb:", "kitsu:", "mal:", "tvdb", "http", "https"]
+                }
+            ],
             types: ["movie", "series", "anime", "tv", "channel"],
             catalogs: [
                 ...(firstKanboxCatalog ? [firstKanboxCatalog] : []), // ה-First ממוקם ראשון לחלוטין
