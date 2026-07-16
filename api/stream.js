@@ -212,12 +212,18 @@ export default async function handler(req, res) {
     if (rawIdWithExt.includes('%')) rawIdWithExt = decodeURIComponent(rawIdWithExt);
     const idWithExt = rawIdWithExt;
 
-    // === בלוק השכמה (Pre-warming) ל-Submaker ===
-    if (type === 'movie' || type === 'series') {
-      const submakerUrl = `https://submaker.elfhosted.com/addon/6c38c5872b2797b33729f954a9d1c5f7/subtitles/${type}/${idWithExt}`;
-      // קריאה בלי await! השרת שלך שולח את הבקשה וממשיך הלאה בלי לחכות.
-      fetch(submakerUrl).catch(() => {}); 
-      console.log(`[ESAY WAKEUP] ⏰ נשלח פינג השכמה ל-Submaker עבור: ${idWithExt}`);
+    // === בלוק השכמה (Pre-warming) לשרתים חינמיים "נרדמים" בלבד ===
+    if (type === 'movie' || type === 'series' || type === 'anime') {
+      const sleepyAddons = [
+        `https://submaker.elfhosted.com/addon/6c38c5872b2797b33729f954a9d1c5f7/subtitles/${type}/${idWithExt}`,
+        `https://pgssubtitle.onrender.com/subtitles/${type}/${idWithExt}`
+      ];
+      
+      sleepyAddons.forEach(url => {
+        // Fire and Forget
+        fetch(url).catch(() => {});
+      });
+      console.log(`[ESAY WAKEUP] ⏰ נשלחו פינגים להשכמת שרתים (Render + Elfhosted) עבור סוג ${type} | מזהה: ${idWithExt}`);
     }
     // ============================================
     
