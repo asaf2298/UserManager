@@ -206,14 +206,56 @@ export default async function handler(req, res) {
         });
 
         // עיצוב התצוגה הסופית
-        uniqueSubs = uniqueSubs.map(sub => {
+        // מערכת דירוג מדויקת: עברית (3) > רוסית (2) > אנגלית (1)
+        uniqueSubs.sort((a, b) => {
+            const langA = (a.lang || '').toLowerCase();
+            const langB = (b.lang || '').toLowerCase();
+
+            const getScore = (l) => {
+                if (l.includes('heb') || l.includes('עברית') || l === 'he' || l === 'make hebrew'|| l === 'submaker')) return 3;
+                if (l.includes('rus') || l === 'ru') return 1;
+                if (l.includes('en') || l.includes('eng')) return 2;
+                return 0;
+            };
+
+            const scoreA = getScore(langA);
+            const scoreB = getScore(langB);
+
+            if (scoreA !== scoreB) {
+                return scoreB - scoreA;
+            }
+
+            if (a._isTextSearch !== b._isTextSearch) {
+                return a._isTextSearch ? 1 : -1;
+            }
+
+            return 0;
+        });
+
+        // עיצוב התצוגה הסופית ופתרון קריסות ה-Frontend של סטרימיו
+        uniqueSubs = uniqueSubs.map((sub, index) => {
             const provider = sub._providerName || 'Esay Sub';
             const originalTitle = sub.title ? sub.title.trim() : '';
             
+            // 1. פתרון קריסת React: הבטחת ID ייחודי לחלוטין לכל כתובית
+            const safeId = (sub.id || '').replace(/[^a-zA-Z0-9]/g, '').substring(0, 15);
+            sub.id = `esay_${index}_${safeId}`;
+
+            // 2. פתרון תקן השפות: "דחיפת" שפות לא מוכרות לקטגוריות שסטרימיו מבין
+            let displayType = '';
+            const lowerLang = (sub.lang || '').toLowerCase();
+            if (lowerLang === 'make hebrew') {
+                sub.lang = 'heb'; // קיבוץ מול סטרימיו
+                displayType = ' [Auto-Translated]'; // סימון למשתמש
+            } else if (lowerLang === 'עברית') {
+                sub.lang = 'heb';
+            }
+
+            // בניית כותרת אינפורמטיבית
             if (originalTitle) {
-                sub.title = `${originalTitle} [${provider}]`;
+                sub.title = `${originalTitle}${displayType} [${provider}]`;
             } else {
-                sub.title = `מקור: ${provider}`;
+                sub.title = `מקור: ${provider}${displayType}`;
             }
             
             delete sub._isTextSearch;
