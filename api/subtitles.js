@@ -213,7 +213,7 @@ export default async function handler(req, res) {
             const langB = (b.lang || '').toLowerCase();
 
             const getScore = (l) => {
-                if (l.includes('heb') || l.includes('עברית') || l === 'he' || l === 'make hebrew'|| l === 'submaker')) return 3;
+                if (l.includes('heb') || l.includes('עברית') || l === 'he' || l === 'make hebrew'|| l === 'submaker') return 3;
                 if (l.includes('rus') || l === 'ru') return 1;
                 if (l.includes('en') || l.includes('eng')) return 2;
                 return 0;
