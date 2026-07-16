@@ -85,6 +85,7 @@ export default async function handler(req, res) {
             const reqTypeStr = isSearch ? '(Text Search)' : '(IMDb ID)';
 
             try {
+                // נשאר על 9 שניות כי יש לנו Pre-warming שעושה את העבודה הכבדה מראש
                 const response = await fetchWithTimeout(targetUrl, fetchOptions, 9000);
                 const elapsed = Date.now() - startTime;
 
@@ -150,55 +151,64 @@ export default async function handler(req, res) {
         console.log(`✅ שפות שאושרו ונשמרו:`, keptLangs);
         console.log(`🚫 שפות שנחסמו ונמחקו:`, droppedLangs);
 
-        uniqueSubs.sort((a, b) => {
-            const langA = (a.lang || '').toLowerCase();
-            const langB = (b.lang || '').toLowerCase();
+        // ניקוי, סינון שפות והמרה סופית
+        const cleanedSubs = [];
+        const seenSubs = new Set();
 
-            const getScore = (l) => {
-                if (l.includes('heb') || l.includes('עברית') || l === 'he' || l === 'make hebrew' || l === 'submaker') return 3;
-                if (l.includes('rus') || l === 'ru') return 1;
-                if (l.includes('en') || l.includes('eng')) return 2;
-                return 0;
-            };
+        uniqueSubs.forEach((sub, index) => {
+            // 1. השמדת כתוביות ללא לינק (קריטי ליציבות סטרימיו)
+            if (!sub.url) return;
 
-            const scoreA = getScore(langA);
-            const scoreB = getScore(langB);
+            // 2. המרת שפות לתקן אחיד (heb, eng, rus)
+            const l = (sub.lang || '').toLowerCase().trim();
+            let lang = 'heb';
+            let displayType = ''; 
 
+            if (['ru', 'rus', 'russian'].some(s => l.includes(s))) {
+                lang = 'rus';
+            } else if (['en', 'eng', 'english', 'en-us', 'en-gb'].some(s => l.includes(s))) {
+                lang = 'eng';
+            } else {
+                lang = 'heb';
+                if (l.includes('make') || l.includes('submaker')) {
+                    displayType = ' [Auto-Translated]';
+                }
+            }
+            sub.lang = lang;
+
+            // 3. מניעת כפילויות (אותו לינק + אותה שפה)
+            const subKey = `${sub.url}|${sub.lang}`;
+            if (seenSubs.has(subKey)) return;
+            seenSubs.add(subKey);
+
+            // 4. עיצוב סופי לממשק
+            const provider = sub._providerName || 'Esay Sub';
+            const safeId = (sub.id || '').replace(/[^a-zA-Z0-9]/g, '').substring(0, 10);
+            sub.id = `esay_${index}_${safeId}`;
+            
+            let warning = (sub.behaviorHints?.notWebReady) ? ' ⚠️ נגן חיצוני' : '';
+            sub.title = `${sub.title || 'כתובית'}${displayType} [${provider}]${warning}`;
+
+            delete sub._isTextSearch;
+            delete sub._providerName;
+            delete sub._sourceBaseUrl;
+            
+            cleanedSubs.push(sub);
+        });
+
+        // 5. סידור חכם: עברית ראשונה > אנגלית > רוסית. ותעדוף מזהה אמיתי על חיפוש מילולי.
+        cleanedSubs.sort((a, b) => {
+            const getScore = (l) => l === 'heb' ? 3 : (l === 'eng' ? 2 : (l === 'rus' ? 1 : 0));
+            const scoreA = getScore(a.lang);
+            const scoreB = getScore(b.lang);
+            
             if (scoreA !== scoreB) return scoreB - scoreA;
             if (a._isTextSearch !== b._isTextSearch) return a._isTextSearch ? 1 : -1;
             return 0;
         });
 
-        uniqueSubs = uniqueSubs.map((sub, index) => {
-            const provider = sub._providerName || 'Esay Sub';
-            const originalTitle = sub.title ? sub.title.trim() : '';
-            
-            const safeId = (sub.id || '').replace(/[^a-zA-Z0-9]/g, '').substring(0, 15);
-            sub.id = `esay_${index}_${safeId}`;
-
-            let displayType = '';
-            const lowerLang = (sub.lang || '').toLowerCase();
-            if (lowerLang === 'make hebrew') {
-                sub.lang = 'heb';
-                displayType = ' [Auto-Translated]';
-            } else if (lowerLang === 'עברית') {
-                sub.lang = 'heb';
-            }
-
-            if (originalTitle) {
-                sub.title = `${originalTitle}${displayType} [${provider}]`;
-            } else {
-                sub.title = `מקור: ${provider}${displayType}`;
-            }
-            
-            delete sub._isTextSearch;
-            delete sub._providerName;
-            delete sub._sourceBaseUrl; 
-            return sub;
-        });
-
-        console.log(`[ESAY SUBTITLES] 🏁 הליך הסתיים. נשלחו ${uniqueSubs.length} כתוביות מסודרות ללקוח.\n`);
-        return res.status(200).json({ subtitles: uniqueSubs });
+        console.log(`[ESAY SUBTITLES] 🏁 הליך הסתיים. נשלחו ${cleanedSubs.length} כתוביות מסודרות ללקוח.\n`);
+        return res.status(200).json({ subtitles: cleanedSubs });
 
     } catch (error) {
         console.error('[ESAY SUBTITLES] 💥 Global Proxy Error:', error);
