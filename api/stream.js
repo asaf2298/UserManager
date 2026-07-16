@@ -138,7 +138,7 @@ function formatForStremio(streams) {
     if (stream.behaviorHints && stream.behaviorHints.notWebReady) {
       prefix += ' (לנגן תומך)';
     }
-
+    
     stream.name = `[#${position}] ${prefix} | ${cleanName}`;
     stream.title = cleanTitle;
 
@@ -212,6 +212,15 @@ export default async function handler(req, res) {
     if (rawIdWithExt.includes('%')) rawIdWithExt = decodeURIComponent(rawIdWithExt);
     const idWithExt = rawIdWithExt;
 
+    // === בלוק השכמה (Pre-warming) ל-Submaker ===
+    if (type === 'movie' || type === 'series') {
+      const submakerUrl = `https://submaker.elfhosted.com/addon/6c38c5872b2797b33729f954a9d1c5f7/subtitles/${type}/${idWithExt}`;
+      // קריאה בלי await! השרת שלך שולח את הבקשה וממשיך הלאה בלי לחכות.
+      fetch(submakerUrl).catch(() => {}); 
+      console.log(`[ESAY WAKEUP] ⏰ נשלח פינג השכמה ל-Submaker עבור: ${idWithExt}`);
+    }
+    // ============================================
+    
     if (type === 'tv' || type === 'channel') {
       const tvAddonUrl = process.env.TV_ADDON_URL;
       if (!tvAddonUrl) return res.status(200).json({ streams: [] });
