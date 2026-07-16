@@ -3,7 +3,6 @@ import http from 'http';
 import https from 'https';
 import { getCleanMovieName } from './search.js';
 
-// סוכנים ייעודיים לעקיפת תעודות בעייתיות - תומך גם בהפניות HTTP וגם HTTPS
 const httpAgent = new http.Agent();
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 const dynamicAgent = (_parsedURL) => _parsedURL.protocol === 'http:' ? httpAgent : httpsAgent;
@@ -18,7 +17,6 @@ async function fetchWithTimeout(url, options, timeoutMs) {
     }
 }
 
-// הרשימה המלאה והעשירה לזיהוי כתוביות רלוונטיות
 const ALLOWED_LANGS = [
     'he', 'heb', 'hebrew', 'iw', 'he-il', 'עברית',
     'en', 'eng', 'english', 'en-us', 'en-gb',
@@ -53,9 +51,11 @@ export default async function handler(req, res) {
         const fetchSubtitleAddon = async (baseUrl, customQuery, isSearch) => {
             const startTime = Date.now();
             const cleanBaseUrl = baseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-            const targetUrl = `${cleanBaseUrl}/subtitles/${type}/${customQuery}.json`;
+            
+            // תיקון ה-404 החשוב: מניעת כפילות של .json
+            const cleanQuery = customQuery.replace(/\.json$/, '');
+            const targetUrl = `${cleanBaseUrl}/subtitles/${type}/${cleanQuery}.json`;
 
-            // אופטימיזציה: חישוב שם הספק פעם אחת בלבד לאדאון, במקום לכל כתובית
             let calculatedProvider = 'Esay Sub';
             const match = cleanBaseUrl.match(/https?:\/\/([^\/]+)/);
             if (match && match[1]) {
@@ -113,7 +113,7 @@ export default async function handler(req, res) {
             
             if (cleanName) {
                 console.log(`[ESAY SUBTITLES] 🔤 TMDB זיהה את השם: "${cleanName}". מריץ גל חיפושים שני...`);
-                const searchPromises = addons.map(url => fetchSubtitleAddon(url, `search=${encodeURIComponent(cleanName)}.json`, true));
+                const searchPromises = addons.map(url => fetchSubtitleAddon(url, `search=${encodeURIComponent(cleanName)}`, true));
                 promises = promises.concat(searchPromises);
             } else {
                 console.log(`[ESAY SUBTITLES] ⚠️ פונקציית העזר לא מצאה שם תקין ב-TMDB. חיפוש הטקסט מבוטל.`);
@@ -122,7 +122,6 @@ export default async function handler(req, res) {
 
         const results = await Promise.allSettled(promises);
         
-        // אופטימיזציה: מעבר יחיד ב-O(N) לפריקה, סינון וכפילויות, ללא העתקות זיכרון יקרות
         const seenUrls = new Set();
         let uniqueSubs = [];
 
@@ -133,21 +132,17 @@ export default async function handler(req, res) {
                 for (let i = 0; i < subtitles.length; i++) {
                     const sub = subtitles[i];
                     
-                    // 1. חסימת כפילויות מיידית
                     if (sub.url && seenUrls.has(sub.url)) continue;
                     
-                    // 2. סינון שפה
                     const lang = (sub.lang || '').toLowerCase();
                     const isAllowed = ALLOWED_LANGS.some(allowed => lang.includes(allowed));
                     
                     if (isAllowed) {
                         if (sub.url) seenUrls.add(sub.url);
                         
-                        // 3. הדבקת משתני עזר לאובייקט הקיים (Memoization) במקום לשבט אותו
                         sub._isTextSearch = isSearch;
                         sub._providerName = (sub.id && sub.id.includes('opensubtitles')) ? 'OpenSubtitles' : calculatedProvider;
                         
-                        // שימוש ב-push היעיל ביותר
                         uniqueSubs.push(sub);
                     }
                 }
@@ -181,7 +176,6 @@ export default async function handler(req, res) {
                 sub.title = `מקור: ${provider}`;
             }
             
-            // מטאטא זיכרון
             delete sub._isTextSearch;
             delete sub._providerName;
             delete sub._sourceBaseUrl; 
