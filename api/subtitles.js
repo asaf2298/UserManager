@@ -180,7 +180,10 @@ export default async function handler(req, res) {
             if (seenSubs.has(subKey)) return;
             seenSubs.add(subKey);
 
-            // 4. בניית מחרוזות בטוחות לממשק 
+            // 4. שליפת ציון הכתובית (לצורך מיון)
+            const rawScore = Number(sub.score || sub.SubRating || sub.rating || sub.downloads || 0);
+
+            // 5. בניית מחרוזות בטוחות לממשק 
             const provider = sub._providerName || 'Esay Sub';
             const originalId = String(sub.id || `esay${index}`);
             const safeId = originalId.replace(/[^a-zA-Z0-9]/g, '').substring(0, 10);
@@ -190,25 +193,44 @@ export default async function handler(req, res) {
             const rawTitle = String(sub.title || 'כתובית').replace(/\n+/g, ' ').trim();
             const finalTitle = `${rawTitle}${displayType} [${provider}]${warning}`;
 
-            // === 🚀 אובייקט סטרילי: רק מה שסטרימיו דורש, בלי שום זבל! ===
-            const strictlyCompliantSub = {
+            // === 🚀 אובייקט עם משתני עזר (יימחקו לפני השליחה) ===
+            const compliantSub = {
                 id: `esay_${index}_${safeId}`,
                 url: String(sub.url),
                 lang: lang,
-                title: finalTitle
+                title: finalTitle,
+                _isTextSearch: sub._isTextSearch,
+                _rawScore: isNaN(rawScore) ? 0 : rawScore,
+                _isAuto: (l.includes('make') || l.includes('submaker')) ? 1 : 0 // 1 = תרגום מכונה, 0 = אנושי
             };
             
-            cleanedSubs.push(strictlyCompliantSub);
+            cleanedSubs.push(compliantSub);
         });
 
-        // 5. סידור חכם: עברית ראשונה > אנגלית > רוסית.
+        // 6. סידור חכם! (הטובות ביותר למעלה)
         cleanedSubs.sort((a, b) => {
             const getScore = (l) => l === 'heb' ? 3 : (l === 'eng' ? 2 : (l === 'rus' ? 1 : 0));
             const scoreA = getScore(a.lang);
             const scoreB = getScore(b.lang);
             
+            // עדיפות 1: שפה (עברית > אנגלית > רוסית)
             if (scoreA !== scoreB) return scoreB - scoreA;
-            return 0;
+            
+            // עדיפות 2: תרגום אנושי גובר על תרגום מכונה AI! 
+            if (a._isAuto !== b._isAuto) return a._isAuto - b._isAuto; // כתוביות AI (1) יידחפו למטה
+            
+            // עדיפות 3: מזהה אמיתי (ID) גובר על חיפוש מילולי (Text Search)
+            if (a._isTextSearch !== b._isTextSearch) return a._isTextSearch ? 1 : -1;
+            
+            // עדיפות 4: ציון הכתובית
+            return b._rawScore - a._rawScore;
+        });
+
+        // 7. מחיקת משתני העזר שנייה לפני שליחה לסטרימיו (כדי לא לשבור לו את הסכמה)
+        cleanedSubs.forEach(sub => {
+            delete sub._isTextSearch;
+            delete sub._rawScore;
+            delete sub._isAuto; 
         });
 
         console.log(`[ESAY SUBTITLES] 🏁 הליך הסתיים. נשלחו ${cleanedSubs.length} כתוביות סטריליות ללקוח.\n`);
