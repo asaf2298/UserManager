@@ -41,6 +41,7 @@ function isAllowedLang(rawLang) {
 }
 
 export default async function handler(req, res) {
+    console.log(`[ESAY SUBTITLES] 🟢 NEW REQUEST DETECTED: ${req.url}`); // לוג ברזל
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
