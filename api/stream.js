@@ -473,7 +473,7 @@ export default async function handler(req, res) {
         // -----------------------------------------------------------------------------
         // 1. המיון הסופי המרכזי
         // -----------------------------------------------------------------------------
-        /*finalCandidates.sort((a, b) => {
+        finalCandidates.sort((a, b) => {
             const vipA = isVIPSource(a); const vipB = isVIPSource(b);
             if (vipA !== vipB) return vipA ? -1 : 1;
             
@@ -502,7 +502,7 @@ export default async function handler(req, res) {
             if (sA !== sB) return sB - sA;
 
             return getSizeGB(b) - getSizeGB(a);
-        });*/
+        });
 
         // -----------------------------------------------------------------------------
         // 2. חומת מגן: סינון קריטי של ערכים פגומים או ריקים
