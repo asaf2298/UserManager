@@ -63,7 +63,7 @@ export default async function handler(req, res) {
 
     const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
     const userConfig = configs[userKey] || {};
-    const metadataBaseUrl = userConfig.metadataBase || process.env.AIOMETADATA_URL || '';
+    const metadataBaseUrl = userConfig.catalogBase || process.env.AIOMETADATA_URL || '';
 
     if (!metadataBaseUrl) {
       return res.status(404).json({ error: 'AIOMETADATA_URL not configured' });
