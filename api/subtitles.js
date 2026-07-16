@@ -59,7 +59,8 @@ export default async function handler(req, res) {
         if (rawIdWithExt.includes('%')) rawIdWithExt = decodeURIComponent(rawIdWithExt);
         const idWithExt = rawIdWithExt;
         const id = idWithExt.replace('.json', '');
-
+        console.log(`[ESAY SUBTITLES] 🔎 חולץ מזהה: ${id} | סוג תוכן: ${type}`);
+        
         const addonUrlsStr = process.env.SUBTITLE_URLS || '';
         const addons = addonUrlsStr.split('|||').map(u => u.trim()).filter(Boolean);
 
