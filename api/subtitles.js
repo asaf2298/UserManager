@@ -17,6 +17,34 @@ async function fetchWithTimeout(url, options, timeoutMs) {
     }
 }
 
+// === מנוע הניקוד החכם ===
+function calculateSmartScore(originalFilename, subId, baseScore) {
+    let score = Number(baseScore) || 0;
+    if (!originalFilename || !subId) return score;
+
+    const file = String(originalFilename).toLowerCase();
+    const sub = String(subId).toLowerCase();
+
+    // בונוסים על התאמת רזולוציה
+    if (file.includes('1080p') && sub.includes('1080p')) score += 30;
+    if ((file.includes('2160p') || file.includes('4k')) && (sub.includes('2160p') || sub.includes('4k'))) score += 30;
+    
+    // התאמות סוג מקור
+    if (file.includes('bluray') && sub.includes('bluray')) score += 50;
+    if (file.includes('web') && sub.includes('web')) score += 50;
+    
+    // התאמות קבוצות שחרור פופולריות
+    if (file.includes('yts') && sub.includes('yts')) score += 100;
+    if (file.includes('rarbg') && sub.includes('rarbg')) score += 100;
+    if (file.includes('tgx') && sub.includes('tgx')) score += 100;
+
+    // עונשים על חוסר סנכרון ודאי
+    if (file.includes('bluray') && sub.includes('web')) score -= 50;
+    if (file.includes('web') && sub.includes('bluray')) score -= 50;
+
+    return score;
+}
+
 function isAllowedLang(rawLang) {
     if (!rawLang) return false;
     const l = rawLang.toLowerCase().trim();
@@ -38,7 +66,6 @@ function isAllowedLang(rawLang) {
 
 export default async function handler(req, res) {
     console.log(`[ESAY SUBTITLES] 🟢 NEW REQUEST DETECTED: ${req.url}`); 
-    console.log(`[ESAY RAW REQUEST] URL: ${req.url} | Headers: ${JSON.stringify(req.headers['user-agent'])}`);
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -53,19 +80,34 @@ export default async function handler(req, res) {
 
         const type = urlParts[subIdx + 1];
         
-        // במקום לחלץ רק את ה-ID, אנחנו לוקחים את כל "הזנב" שסטרימיו שלח (כולל ה-Extra)
+        // חילוץ נתיב וקריאת משתני עזר (Extra)
         const remainingParts = urlParts.slice(subIdx + 2);
         let fullQueryPath = remainingParts.join('/'); 
         if (fullQueryPath.includes('%')) fullQueryPath = decodeURIComponent(fullQueryPath);
         
-        // אנחנו חלצים גם את ה-ID הנקי כדי שנוכל להשתמש בו בגיבוי של TMDB
         const id = remainingParts[0].replace('.json', '');
-        console.log(`[ESAY SUBTITLES] 🔎 חולץ מזהה: ${id} | סוג תוכן: ${type} | נתיב מלא לספקים: ${fullQueryPath}`);
         
+        // חילוץ שם הקובץ לטובת ציון הסנכרון
+        const urlParams = new URLSearchParams(req.url.split('?')[1] || '');
+        const extraParam = urlParams.get('extra') || '';
+        let originalFilename = '';
+        if (extraParam.includes('filename=')) {
+            const match = extraParam.match(/filename=([^&]+)/);
+            if (match) originalFilename = decodeURIComponent(match[1]);
+        }
+
+        console.log(`[ESAY SUBTITLES] 🔎 חולץ מזהה: ${id} | שם קובץ לסנכרון: ${originalFilename || 'לא נמצא'}`);
+        
+        // סינון ספקים: חוסם את Submaker באופן אקטיבי כדי שלא יתקע את השרת
         const addonUrlsStr = process.env.SUBTITLE_URLS || '';
-        const addons = addonUrlsStr.split('|||').map(u => u.trim()).filter(Boolean);
+        const addons = addonUrlsStr.split('|||')
+            .map(u => u.trim())
+            .filter(url => url && !url.toLowerCase().includes('submaker'));
 
         if (addons.length === 0) return res.status(200).json({ subtitles: [] });
+
+        // המערך המשותף שמתמלא בזמן אמת ע"י הספקים
+        let gatheredSubs = [];
 
         const fetchSubtitleAddon = async (baseUrl, customQuery, isSearch) => {
             const startTime = Date.now();
@@ -84,79 +126,93 @@ export default async function handler(req, res) {
                     .replace('.club', '');
             }
 
-            const headers = { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json, text/plain, */*' };
-            const fetchOptions = { headers };
+            const fetchOptions = { 
+                headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json, text/plain, */*' } 
+            };
             if (cleanBaseUrl.includes('sub.scary.network')) fetchOptions.agent = dynamicAgent;
             const reqTypeStr = isSearch ? '(Text Search)' : '(IMDb ID)';
 
             try {
-                // נשאר על 9 שניות כי יש לנו Pre-warming שעושה את העבודה הכבדה מראש
+                // כל ספק מקבל 9 שניות גג בפני עצמו
                 const response = await fetchWithTimeout(targetUrl, fetchOptions, 9000);
                 const elapsed = Date.now() - startTime;
 
-                if (!response.ok) {
-                    console.log(`[ESAY SUBTITLES] ⚠️ סטטוס ${response.status} מ-${cleanBaseUrl} ${reqTypeStr}`);
-                    return { subtitles: [], isSearch, calculatedProvider };
-                }
+                if (!response.ok) return;
                 const data = await response.json();
-                // --- מרגל הלוגים החדש שלנו ---
+                
                 if (data.subtitles && data.subtitles.length > 0) {
-                    // נבדוק את הכתובית הראשונה שחזרה כדגימה
-                    const sample = data.subtitles[0];
-                    console.log(`[ESAY DEBUG] 🕵️ ספק: ${calculatedProvider}`);
-                    console.log(`[ESAY DEBUG] 🔍 דגימת שדות:`, JSON.stringify(sample, null, 2));
+                    const subCount = data.subtitles.length;
+                    console.log(`[ESAY SUBTITLES] ⏱️ ספק ${calculatedProvider} ${reqTypeStr} הביא ${subCount} תוצאות ב-${elapsed}ms`);
+                    
+                    // מתייגים את התוצאות ודוחפים למערך הכללי מיד
+                    const subsToAdd = data.subtitles.map(s => {
+                        s._isTextSearch = isSearch;
+                        s.calculatedProvider = calculatedProvider;
+                        return s;
+                    });
+                    gatheredSubs.push(...subsToAdd);
                 }
-                // -----------------------------
-                const subCount = data.subtitles ? data.subtitles.length : 0;
-                console.log(`[ESAY SUBTITLES] ⏱️ תוסף ${cleanBaseUrl} ${reqTypeStr} סיים ב-${elapsed}ms (הביא ${subCount} כתוביות במקור)`);
-                return { subtitles: data.subtitles || [], isSearch, calculatedProvider };
             } catch (err) {
-                const elapsed = Date.now() - startTime;
-                if (err.name === 'AbortError' || err.type === 'aborted') {
-                    console.warn(`[ESAY SUBTITLES] ⏳ TIMEOUT: נחתך בכוח ${cleanBaseUrl} ${reqTypeStr} אחרי (${elapsed}ms)`);
-                } else {
-                    console.error(`[ESAY SUBTITLES] ❌ קריסה ב-${cleanBaseUrl} ${reqTypeStr}: ${err.message}`);
-                }
-                return { subtitles: [], isSearch, calculatedProvider };
+                // התעלמות משגיאות שקטות כדי לא לתקוע את שאר הספקים
             }
         };
 
-        let promises = addons.map(url => fetchSubtitleAddon(url, fullQueryPath, false));
+        const fetchPromises = addons.map(url => fetchSubtitleAddon(url, fullQueryPath, false));
 
         if (id.startsWith('tt') || id.startsWith('tmdb:')) {
-            console.log(`[ESAY SUBTITLES] 🔍 מנסה לבצע גיבוי חיפוש טקסט עבור ID: ${id}`);
             const cleanName = await getCleanMovieName(type, id);
             if (cleanName) {
-                console.log(`[ESAY SUBTITLES] 🔤 TMDB זיהה את השם: "${cleanName}". מריץ גל חיפושים שני...`);
+                console.log(`[ESAY SUBTITLES] 🔤 מריץ גיבוי TMDB: "${cleanName}"...`);
                 const searchPromises = addons.map(url => fetchSubtitleAddon(url, `search=${encodeURIComponent(cleanName)}`, true));
-                promises = promises.concat(searchPromises);
+                fetchPromises.push(...searchPromises);
             }
         }
 
-        const results = await Promise.allSettled(promises);
+        // === לוגיקת הטיימר הדינמי (Race Condition) ===
+        const dynamicTimeout = new Promise((resolve) => {
+            setTimeout(() => {
+                // סופרים כמה כתוביות בעברית נאספו עד נקודת ה-6 שניות
+                const hebCount = gatheredSubs.filter(sub => {
+                    const l = String(sub.lang || '').toLowerCase().trim();
+                    return l.includes('heb') || l.includes('עברית') || l === 'he' || l === 'iw' || l === 'he-il';
+                }).length;
+
+                if (hebCount >= 3) {
+                    console.log(`[ESAY TIMEOUT] ⏱️ עברו 6 שניות. יש ${hebCount} כתוביות בעברית -> חותך את ההמתנה!`);
+                    resolve('TIMEOUT_6');
+                } else {
+                    console.log(`[ESAY TIMEOUT] ⏱️ עברו 6 שניות, חסרות כתוביות בעברית (${hebCount}/3) -> מאריך ל-9 שניות...`);
+                    setTimeout(() => resolve('TIMEOUT_9'), 3000);
+                }
+            }, 6000);
+        });
+
+        const raceResult = await Promise.race([
+            Promise.allSettled(fetchPromises),
+            dynamicTimeout
+        ]);
+
+        if (typeof raceResult === 'string') {
+            console.warn(`[ESAY TIMEOUT] ⚠️ הסתיים בעקבות טיימר: ${raceResult}`);
+        }
+
+        // עיבוד הנתונים שנאספו
         const seenUrls = new Set();
         let uniqueSubs = [];
         const droppedLangs = {};
         const keptLangs = {};
 
-        for (const res of results) {
-            if (res.status === 'fulfilled' && res.value.subtitles.length > 0) {
-                const { subtitles, isSearch, calculatedProvider } = res.value;
-                for (let i = 0; i < subtitles.length; i++) {
-                    const sub = subtitles[i];
-                    if (sub.url && seenUrls.has(sub.url)) continue;
-                    
-                    const langStr = (sub.lang || 'unknown').toLowerCase().trim();
-                    if (isAllowedLang(langStr)) {
-                        if (sub.url) seenUrls.add(sub.url);
-                        keptLangs[langStr] = (keptLangs[langStr] || 0) + 1;
-                        sub._isTextSearch = isSearch;
-                        sub._providerName = (sub.id && sub.id.includes('opensubtitles')) ? 'OpenSubtitles' : calculatedProvider;
-                        uniqueSubs.push(sub);
-                    } else {
-                        droppedLangs[langStr] = (droppedLangs[langStr] || 0) + 1;
-                    }
-                }
+        for (const sub of gatheredSubs) {
+            if (sub.url && seenUrls.has(sub.url)) continue;
+            
+            const langStr = (sub.lang || 'unknown').toLowerCase().trim();
+            if (isAllowedLang(langStr)) {
+                if (sub.url) seenUrls.add(sub.url);
+                keptLangs[langStr] = (keptLangs[langStr] || 0) + 1;
+                sub._providerName = (sub.id && sub.id.includes('opensubtitles')) ? 'OpenSubtitles' : sub.calculatedProvider;
+                uniqueSubs.push(sub);
+            } else {
+                droppedLangs[langStr] = (droppedLangs[langStr] || 0) + 1;
             }
         }
 
@@ -164,15 +220,12 @@ export default async function handler(req, res) {
         console.log(`✅ שפות שאושרו ונשמרו:`, keptLangs);
         console.log(`🚫 שפות שנחסמו ונמחקו:`, droppedLangs);
 
-        // ניקוי, סינון שפות והמרה סופית
         const cleanedSubs = [];
         const seenSubs = new Set();
 
         uniqueSubs.forEach((sub, index) => {
-            // 1. חסימת כתוביות ללא לינק
             if (!sub.url) return;
 
-            // 2. המרת שפות למזהים מדויקים בלבד
             const l = String(sub.lang || '').toLowerCase().trim();
             let lang = 'heb';
             let displayType = ''; 
@@ -183,67 +236,55 @@ export default async function handler(req, res) {
                 lang = 'eng';
             } else {
                 lang = 'heb';
-                if (l.includes('make') || l.includes('submaker')) {
-                    displayType = ' [AI 🤖]';
-                }
+                if (l.includes('make') || l.includes('submaker')) displayType = ' [AI 🤖]';
             }
 
-            // 3. מניעת כפילויות לינקים
             const subKey = `${sub.url}|${lang}`;
             if (seenSubs.has(subKey)) return;
             seenSubs.add(subKey);
 
-            // 4. שליפת ציון הכתובית (לצורך מיון)
-            const rawScore = Number(sub.score || sub.SubRating || sub.rating || sub.downloads || 0);
+            // הפעלת מנוע הניקוד החכם!
+            const providerScore = Number(sub.score || sub.SubRating || sub.rating || sub.downloads || 0);
+            const smartScore = calculateSmartScore(originalFilename, sub.id, providerScore);
 
-            // 5. בניית מחרוזות בטוחות לממשק 
             const provider = sub._providerName || 'Esay Sub';
             const originalId = String(sub.id || `esay${index}`);
             const safeId = originalId.replace(/[^a-zA-Z0-9]/g, '').substring(0, 10);
             
             let warning = (sub.behaviorHints?.notWebReady) ? ' ⚠️ נגן חיצוני' : '';
-            // ניקוי ירידות שורה שעלולות לשבור את הממשק של סטרימיו
             const rawTitle = String(sub.title || 'כתובית').replace(/\n+/g, ' ').trim();
             const finalTitle = `${rawTitle}${displayType} [${provider}]${warning}`;
 
-            // === 🚀 אובייקט עם משתני עזר (יימחקו לפני השליחה) ===
             const compliantSub = {
                 id: `esay_${index}_${safeId}`,
                 url: String(sub.url),
                 lang: lang,
                 title: finalTitle,
                 _isTextSearch: sub._isTextSearch,
-                _rawScore: isNaN(rawScore) ? 0 : rawScore,
-                _isAuto: (l.includes('make') || l.includes('submaker')) ? 1 : 0 // 1 = תרגום מכונה, 0 = אנושי
+                _rawScore: isNaN(smartScore) ? 0 : smartScore,
+                _isAuto: (l.includes('make') || l.includes('submaker')) ? 1 : 0 
             };
             
             cleanedSubs.push(compliantSub);
         });
 
-        // 6. סידור חכם! (הטובות ביותר למעלה)
+        // מיון חכם
         cleanedSubs.sort((a, b) => {
             const getScore = (l) => l === 'heb' ? 3 : (l === 'eng' ? 2 : (l === 'rus' ? 1 : 0));
             const scoreA = getScore(a.lang);
             const scoreB = getScore(b.lang);
             
-            // עדיפות 1: שפה (עברית > אנגלית > רוסית)
             if (scoreA !== scoreB) return scoreB - scoreA;
-            
-            // עדיפות 2: תרגום אנושי גובר על תרגום מכונה AI! 
-            if (a._isAuto !== b._isAuto) return a._isAuto - b._isAuto; // כתוביות AI (1) יידחפו למטה
-            
-            // עדיפות 3: מזהה אמיתי (ID) גובר על חיפוש מילולי (Text Search)
+            if (a._isAuto !== b._isAuto) return a._isAuto - b._isAuto; 
             if (a._isTextSearch !== b._isTextSearch) return a._isTextSearch ? 1 : -1;
-            
-            // עדיפות 4: ציון הכתובית
             return b._rawScore - a._rawScore;
         });
 
-        // 7. מחיקת משתני העזר שנייה לפני שליחה לסטרימיו (כדי לא לשבור לו את הסכמה)
         cleanedSubs.forEach(sub => {
             delete sub._isTextSearch;
             delete sub._rawScore;
             delete sub._isAuto; 
+            delete sub.calculatedProvider;
         });
 
         console.log(`[ESAY SUBTITLES] 🏁 הליך הסתיים. נשלחו ${cleanedSubs.length} כתוביות סטריליות ללקוח.\n`);
