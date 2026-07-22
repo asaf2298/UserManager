@@ -63,7 +63,10 @@ export default async function handler(req, res) {
         if (userConfig.catalogBase) {
             try {
                 const cleanCatalogBase = userConfig.catalogBase.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-                const catRes = await fetchWithTimeout(`${cleanCatalogBase}/manifest.json`, { headers: standardHeaders }, 7500);
+                
+                // === שינוי 1: שימוש ב-kanboxHeaders כדי למנוע חסימת AIO ===
+                const catRes = await fetchWithTimeout(`${cleanCatalogBase}/manifest.json`, { headers: kanboxHeaders }, 7500);
+                
                 if (catRes.ok) {
                     const catManifest = await catRes.json();
                     if (catManifest?.catalogs) {
@@ -82,7 +85,8 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.5.0", // הקפצת גרסה קריטית למחיקת המטמון בסטרימיו
+            // === שינוי 2: הקפצת גרסה ===
+            version: "2.5.2", 
             name: `Esay - ${userConfig.name || userKey}`,
             description: "Esay Aggregator with Unified Search & LiveTV Israel",
             // הוספנו כאן את כל הקידומות המבוקשות:
@@ -99,7 +103,8 @@ export default async function handler(req, res) {
                 {
                     name: "subtitles",
                     types: ["movie", "series", "anime"], // סטרימיו יבקש כתוביות רק עבור התוכן הזה!
-                    idPrefixes: ["tt", "tmdb:", "kitsu:", "mal:", "tvdb", "http", "https"]
+                    // === שינוי 3: הוספת "dbz:" לכתוביות ===
+                    idPrefixes: ["tt", "tmdb:", "kitsu:", "mal:", "tvdb", "http", "https", "dbz:"]
                 }
             ],
             types: ["movie", "series", "anime", "tv", "channel"],
