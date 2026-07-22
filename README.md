@@ -1,38 +1,42 @@
-
 # 🚀 UserManager-Stremio (Vecret Proxy)
 
-Vecret is a highly-optimized, serverless proxy and aggregator for Stremio addons, built to run on Vercel. It fetches, filters, pre-sorts, and deduplicates streams and subtitles from multiple addons simultaneously, delivering a blazing-fast, customizable, and buffer-free Stremio experience based on granular user profiles.
+Vecret is a highly-optimized, serverless proxy and aggregator for **Stremio and KODI** addons, built to run on Vercel. It fetches, filters, pre-sorts, and deduplicates streams and subtitles from multiple addons simultaneously, delivering a blazing-fast, customizable, and buffer-free media experience based on granular user profiles.
 
 ---
 
 ## 🌟 תכונות מרכזיות (Key Features)
 
 * **מנגנון מירוץ דו-שלבי חכם (Smart Adaptive Timeout):**
-הפרוקסי פונה לכל התוספים במקביל. כברירת מחדל, המערכת ממתינה **5.5 שניות** (`INITIAL_WAIT_MS`).
-* **אם נאספו מספיק תוצאות** (לפחות חצי ממכסת הפרופיל) 👈 המערכת חותכת מיד למיון ושולחת את התוצאות לסטרימיו במהירות שיא.
+* הפרוקסי פונה לכל התוספים במקביל. כברירת מחדל, המערכת ממתינה **5.5 שניות** (`INITIAL_WAIT_MS`).
+* **אם נאספו מספיק תוצאות** (לפחות חצי ממכסת הפרופיל) 👈 המערכת חותכת מיד למיון ושולחת את התוצאות לנגן במהירות שיא.
 * **אם התוצאות דלות** 👈 המערכת מנצלת באופן דינמי את יתרת הזמן שהוגדרה בפרופיל (עד 9.5 שניות) כדי לגרד מקורות מתוספים איטיים.
 
 
 * **אלגוריתם המיון המוזהב (Pre-Sorting & Bucket Sort):**
-כדי למנוע מקבצים פחות איכותיים לעקוף קבצים מובחרים, המערכת מבצעת **קדם-מיון (Pre-Sort) קפדני** על כל המאגר הגולמי לפני חלוקתו לדליים. המיון מבוסס על משקלי רזולוציה, קודקים, איכות שמע, כתוביות מובנות, כמות סידרים וגודל קובץ.
-* **איחוד משקל HDR:**
-כל משפחת ה-HDR (Dolby Vision, HDR10, HDR10+, ו-HDR רגיל) מקבלות עדיפות שווה וגבוהה (2 נקודות) כדי לאפשר בחירה חופשית של הסטרים המתאים ביותר למסך שלך.
-* **ניהול מכסות וגלישת עודפים (`drawWithOverflow`):**
-התוצאות מחולקות לדליים ייעודיים לפי רזולוציה וסוג (קאש מול טורנט להורדה). המערכת שואפת למלא את מכסת ה-Cached קודם. אם חסר קאש – היא מפצה על כך באנ-קאש, ואם חסר אנ-קאש – היא משלימה מקאש עודף כדי שהרשימה תמיד תישאר מלאה וזמינה.
+* כדי למנוע מקבצים פחות איכותיים לעקוף קבצים מובחרים, המערכת מבצעת **קדם-מיון (Pre-Sort) קפדני** על כל המאגר הגולמי לפני חלוקתו לדליים. המיון מבוסס על משקלי רזולוציה, קודקים, איכות שמע, כתוביות מובנות, כמות סידרים וגודל קובץ.
+* **איחוד משקל HDR:** כל משפחת ה-HDR (Dolby Vision, HDR10, HDR10+, ו-HDR רגיל) מקבלות עדיפות שווה וגבוהה (2 נקודות) כדי לאפשר בחירה חופשית של הסטרים המתאים ביותר למסך שלך.
+* **ניהול מכסות וגלישת עודפים (`drawWithOverflow`):** התוצאות מחולקות לדליים ייעודיים לפי רזולוציה וסוג (קאש מול טורנט להורדה). המערכת שואפת למלא את מכסת ה-Cached קודם. אם חסר קאש – היא מפצה על כך באנ-קאש, ואם חסר אנ-קאש – היא משלימה מקאש עודף כדי שהרשימה תמיד תישאר מלאה וזמינה.
+
+
+* **תמיכה מורחבת ושירותים מתקדמים (Broad Services Integration):**
+* זיהוי אוטומטי ותמיכה בשירותי פרימיום (Debrid מרובים), ספקי מטא-דאטה חיצוניים חלופיים (AIOMETADATA ואחרים), ואינטגרציה חלקה מול פרוטוקולים שונים כדי להבטיח זמינות תוכן מקסימלית.
 * **הבחנה חכמה בין סוגי מקורות:**
-* **זמין לצפייה (Cached):** קבצים המוזרמים ישירות משרתי ענן (RealDebrid, TorBox וכו').
+* **זמין לצפייה (Cached):** קבצים המוזרמים ישירות משרתי ענן.
 * **מרשת דפדפן (Direct Web):** לינקים ישירים של `HTTP` המזוהים כצפייה ישירה (כמו Kan-Box או AnimeIL) שאינם דורשים Debrid.
 * **Usenet:** לינקי HTTP המזוהים כ-Usenet מסומנים כ"זמין לצפייה" **אך ורק** אם הם מכילים מילות מפתח מפורשות של שרת ענן. אחרת, הם מתויגים כטורנט רגיל הדורש הורדה.
 
 
-* **מערך כתוביות חסין קריסות (Resilient Subtitles):**
+
+
+* **מערך כתוביות חכם וחסין קריסות (Resilient & Smart Subtitles):**
+* **דירוג לפי אורך סרט (Duration Matching):** המערכת מנתחת את הכתוביות שנאספו ונותנת **ניקוד גבוה יותר לכתוביות שאורך הזמן שלהן תואם במדויק לאורך הסרט/הפרק**. זה מבטיח סנכרון מושלם (Sync) ומונע הצגת כתוביות של גרסאות Director's Cut או Extended על גרסאות רגילות (ולהפך).
 * **עקיפת SSL (Self-Signed Certificates):** מונע קריסות שרת במקרים בהם תוספי כתוביות (כמו `sub.scary.network`) משתמשים בתעודות אבטחה לא חתומות.
-* **תיוג מקורות דינמי:** מוסיף בסוגריים את שם הספק האמיתי (`[opensubtitles-v3]`, `[ktuvit]`) לצד שם הכתובית בסטרימיו מבלי לדרוס את תיאור הקובץ המקורי.
-* **זמן תגובה מקסימלי:** מוגבל ל-9 שניות קשיחות כדי למנוע מ-Vercel להוריד את השאלטר (מגבלת ה-10 שניות של השרת החינמי).
+* **תיוג מקורות דינמי:** מוסיף בסוגריים את שם הספק האמיתי (`[opensubtitles-v3]`, `[ktuvit]`) לצד שם הכתובית בנגן מבלי לדרוס את תיאור הקובץ המקורי.
+* **זמן תגובה מקסימלי:** מוגבל ל-9 שניות קשיחות כדי למנוע מ-Vercel להוריד את השאלטר.
 
 
 * **סינון וסידור קטלוגים ישראלי (Kan-Box Catalog Styling):**
-המערכת טוענת את קטלוגי Kan-Box באופן דינמי: הקטלוג הראשון (הטלוויזיה החיה) מוצג בראש רשימת הקטלוגים של התוסף, שני הקטלוגים האחרונים של התוסף מסוננים החוצה אוטומטית, והשאר מקבלים תיוג יפה של `Israeli - ` לפני שמם.
+המערכת טוענת את קטלוגי Kan-Box באופן דינמי: הקטלוג הראשון (הטלוויזיה החיה) מוצג בראש רשימת הקטלוגים של התוסף, שני הקטלוגים האחרונים של התוסף מסוננים החוצה אוטומטית, והשאר מקבלים תיוג יפה של `Israeli - ` או `IL - ` לפני שמם.
 
 ---
 
@@ -44,8 +48,8 @@ Vecret is a highly-optimized, serverless proxy and aggregator for Stremio addons
 
 | שם המשתנה | תפקיד המשתנה | דוגמה לערך תקין |
 | --- | --- | --- |
-| `ADDON_URLS` | רשימת אדאוני הסטרימינג לחיפוש (מופרדים ב-`|||`) | `[https://kan-box-addon.vercel.app](https://kan-box-addon.vercel.app)|||[https://torrentio.strem.fun/sort=](https://torrentio.strem.fun/sort=)...` |
-| `SUBTITLE_URLS` | רשימת אדאוני הכתוביות לחיפוש (מופרדים ב-`|||`) | `[https://opensubtitles-v3.strem.io](https://opensubtitles-v3.strem.io)|||[https://sub.scary.network](https://sub.scary.network)` |
+| `ADDON_URLS` | רשימת אדאוני הסטרימינג לחיפוש (מופרדים ב-` |  |
+| `SUBTITLE_URLS` | רשימת אדאוני הכתוביות לחיפוש (מופרדים ב-` |  |
 | `TV_ADDON_URL` | כתובת האדאון הייעודי לערוצי טלוויזיה ישראלים חיים | `[https://kan-box-addon.vercel.app](https://kan-box-addon.vercel.app)` |
 | `TMDB_API_KEY` | מפתח ה-API הקצר של TMDB (גרסת v3 Auth בלבד!) | `KEY...` |
 | `USER_CONFIGS` | אובייקט JSON המגדיר את הפרופילים ומפתחות הגישה של המשתמשים | *(ראה מבנה בהמשך)* |
@@ -84,12 +88,20 @@ Vecret is a highly-optimized, serverless proxy and aggregator for Stremio addons
 
 ---
 
-## 🔌 איך להתקין ב-Stremio
+## 🔌 איך להתקין (Installation)
 
 1. העתק את הכתובת של ה-Vercel Deployment שלך.
 2. הרכב את הקישור בצורה הבאה:
 `https://<YOUR-VERCEL-DOMAIN>/<USER_KEY>/manifest.json`
-3. פתח את אפליקציית Stremio, הדבק את הקישור בשורת החיפוש/התקנת התוספים, ולחץ על **Install**.
+
+### 🎬 התקנה ב-Stremio:
+
+פתח את אפליקציית Stremio, הדבק את הקישור שיצרת בשורת החיפוש בלשונית ה-Addons, ולחץ על **Install**.
+
+### 📺 התקנה ב-KODI:
+
+בזכות התמיכה החדשה בניתובים מתקדמים, ניתן להשתמש בפרוקסי ישירות בקודי דרך תוספים התומכים במניפסטים של סטרימיו (כגון *Stremio2Kodi* או פלאגינים מבוססי פייתון דומים).
+פשוט הזן את אותו הקישור שיצרת בהגדרות הפלאגין בקודי, והמערכת תדע לאגד, למיין ולשלוח את הסטרימים והכתוביות בפורמט שהנגן של קודי יודע לנגן בצורה חלקה!
 
 ---
 
@@ -107,11 +119,11 @@ Vecret is a highly-optimized, serverless proxy and aggregator for Stremio addons
 [ESAY SUBTITLES] 📝 בקשת כתוביות חדשה התקבלה!
 [ESAY SUBTITLES] ⏱️ תוסף https://opensubtitles-v3.strem.io (IMDb ID) סיים ב-242ms (הביא 8 כתוביות)
 [ESAY SUBTITLES] ⏱️ תוסף https://KEY-ktuvit-stremio... (IMDb ID) סיים ב-539ms (הביא 3 כתוביות)
-[ESAY SUBTITLES] 🏁 הליך הסתיים. נשלחו 11 כתוביות מסודרות ללקוח.
+[ESAY SUBTITLES] 🏁 הליך הסתיים. נשלחו 11 כתוביות מסודרות ללקוח. (דורגו לפי התאמת זמן הסרט)
 ======================================================
 
 ```
 
 ---
 
-*Built with passion for seamless, buffer-free, and high-quality Stremio streaming.*
+*Built with passion for seamless, buffer-free, and high-quality streaming on Stremio and KODI.*
