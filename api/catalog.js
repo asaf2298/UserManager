@@ -12,23 +12,39 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 
 let cachedTvCatalogIds = null;
 let lastCacheTime = 0;
+let activeManifestFetch = null; // 🟢 התוספת שלנו: שומר על הבקשה כדי שכל שאר הבקשות המקבילות "ירכבו" עליה
 
-// פונקציה לשליפת קטלוגי טלוויזיה / ערוצים מהאד-און הישראלי
+// הלוגיקה המקורית והדינמית שלך נשארת!
 async function getTvCatalogIds(tvAddonUrl, headers) {
     if (!tvAddonUrl) return [];
+    
+    // אם יש קאש חם מהשעה האחרונה - נחזיר מיד
     if (cachedTvCatalogIds && (Date.now() - lastCacheTime < 1000 * 60 * 60)) {
         return cachedTvCatalogIds;
     }
-    try {
-        const res = await fetchWithTimeout(`${tvAddonUrl}/manifest.json`, { headers }, 7500);
-        if (!res.ok) return [];
-        const manifest = await res.json();
-        cachedTvCatalogIds = manifest.catalogs?.map(c => c.id) || [];
-        lastCacheTime = Date.now();
-        return cachedTvCatalogIds;
-    } catch (e) {
-        return [];
+    
+    // 🟢 אם כבר יש בקשה באוויר למניפסט (בגלל שסטרימיו טוען את כל ה-Board במקביל) - נמתין לה!
+    if (activeManifestFetch) {
+        return await activeManifestFetch;
     }
+
+    // מוציאים בקשה אחת בודדת, ושומרים אותה במשתנה שכולם רואים
+    activeManifestFetch = (async () => {
+        try {
+            const res = await fetchWithTimeout(`${tvAddonUrl}/manifest.json`, { headers }, 7500);
+            if (!res.ok) return [];
+            const manifest = await res.json();
+            cachedTvCatalogIds = manifest.catalogs?.map(c => c.id) || [];
+            lastCacheTime = Date.now();
+            return cachedTvCatalogIds;
+        } catch (e) {
+            return [];
+        } finally {
+            activeManifestFetch = null; // מנקים בסיום כדי שבקשות עתידיות (בעוד שעה) יעבדו רגיל
+        }
+    })();
+
+    return await activeManifestFetch;
 }
 
 // פונקציה משודרגת: שולפת את כל הקטלוגים שתומכים בחיפוש + שומרת את ה-Type המקורי
