@@ -91,7 +91,7 @@ export default async function handler(req, res) {
             // mal/kitsu: אנימה
             // tvdb: סדרות ישנות/אחרות
             // http/https: סטרימינג ישיר
-            idPrefixes: ["tt", "tmdb", "il_", "mal", "kitsu", "tvdb", "http", "https"],
+            idPrefixes: ["tt", "tmdb", "il_", "mal", "kitsu", "tvdb", "http", "https", "dbz:"],
             resources: [
                 "stream", 
                 "catalog", 
