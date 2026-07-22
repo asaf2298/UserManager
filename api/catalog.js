@@ -1,4 +1,5 @@
 import fetch from 'node-fetch';
+import { debugLog } from '../lib/debugLog.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -80,9 +81,8 @@ export default async function handler(req, res) {
     const forwardedIps = req.headers['x-forwarded-for'] || '';
     const clientIp = forwardedIps ? forwardedIps.split(',')[0].trim() : (req.socket?.remoteAddress || '');
     
-    // ניהול מוקפד של Headers למניעת חסימות 
-    const kanboxHeaders = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp };
-    const standardHeaders = { 'User-Agent': clientUA };
+    // Same header set as manifest/meta — AIOMETADATA often requires X-Forwarded-For
+    const proxyHeaders = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp };
 
     try {
         const urlParts = req.url.split('?')[0].split('/');
@@ -105,8 +105,8 @@ export default async function handler(req, res) {
         // ==========================================
         if (cleanCatalogId.startsWith('esay_mixed_search') && extraPart.includes('search=')) {
             const [tvSearchCatalogs, aioSearchCatalogs] = await Promise.all([
-                tvAddonUrl ? getSearchCatalogs(tvAddonUrl, reqType, kanboxHeaders) : Promise.resolve([]),
-                catalogBaseUrl ? getSearchCatalogs(catalogBaseUrl, reqType, standardHeaders) : Promise.resolve([])
+                tvAddonUrl ? getSearchCatalogs(tvAddonUrl, reqType, proxyHeaders) : Promise.resolve([]),
+                catalogBaseUrl ? getSearchCatalogs(catalogBaseUrl, reqType, proxyHeaders) : Promise.resolve([])
             ]);
 
             const searchPromises = [];
@@ -114,7 +114,7 @@ export default async function handler(req, res) {
             // שליחת בקשות חיפוש לאד-און הישראלי (מאקו, דרגון בול וכו')
             for (const cat of tvSearchCatalogs) {
                 searchPromises.push(
-                    fetchWithTimeout(`${tvAddonUrl}/catalog/${cat.type}/${cat.id}/${extraPart}`, { headers: kanboxHeaders }, 7500)
+                    fetchWithTimeout(`${tvAddonUrl}/catalog/${cat.type}/${cat.id}/${extraPart}`, { headers: proxyHeaders }, 7500)
                         .then(r => r.ok ? r.json() : { metas: [] })
                         .catch(() => ({ metas: [] }))
                 );
@@ -123,7 +123,7 @@ export default async function handler(req, res) {
             // שליחת בקשות חיפוש ל-AIO (כולל YukiStreams עם Type מותאם)
             for (const cat of aioSearchCatalogs) {
                 searchPromises.push(
-                    fetchWithTimeout(`${catalogBaseUrl}/catalog/${cat.type}/${cat.id}/${extraPart}`, { headers: standardHeaders }, 7500)
+                    fetchWithTimeout(`${catalogBaseUrl}/catalog/${cat.type}/${cat.id}/${extraPart}`, { headers: proxyHeaders }, 7500)
                         .then(r => r.ok ? r.json() : { metas: [] })
                         .catch(() => ({ metas: [] }))
                 );
@@ -151,28 +151,49 @@ export default async function handler(req, res) {
         // 2. ניתוב קטלוגים רגיל (הגנה על דרגון בול)
         // ==========================================
         let targetUrl = '';
-        let requestHeaders = standardHeaders;
-        const tvCatalogIds = await getTvCatalogIds(tvAddonUrl, kanboxHeaders);
+        let requestHeaders = proxyHeaders;
+        const tvCatalogIds = await getTvCatalogIds(tvAddonUrl, proxyHeaders);
 
         const isDbzCatalog = cleanCatalogId.startsWith('dbz_');
 
         if ((reqType === 'tv' || reqType === 'channel') || isDbzCatalog || tvCatalogIds.includes(cleanCatalogId)) {
             if (!tvAddonUrl) return res.status(404).json({ metas: [] });
             targetUrl = `${tvAddonUrl}/catalog/${reqType}/${rawCatalogId}${extraPart ? '/' + extraPart : ''}`;
-            requestHeaders = kanboxHeaders;
+            requestHeaders = proxyHeaders;
         } else {
             if (!catalogBaseUrl) return res.status(404).json({ metas: [] });
             targetUrl = `${catalogBaseUrl}/catalog/${reqType}/${rawCatalogId}${extraPart ? '/' + extraPart : ''}`;
         }
+
+        // #region agent log
+        debugLog('H2', 'api/catalog.js:proxy', 'catalog proxy attempt', {
+            userKey,
+            cleanCatalogId,
+            reqType,
+            branch: ((reqType === 'tv' || reqType === 'channel') || isDbzCatalog || tvCatalogIds.includes(cleanCatalogId)) ? 'tv' : 'aio',
+            targetHost: targetUrl.split('/').slice(0, 3).join('/'),
+            hasXff: !!requestHeaders['X-Forwarded-For']
+        });
+        // #endregion
         
         const fetchRes = await fetchWithTimeout(targetUrl, { headers: requestHeaders }, 8000);
         if (!fetchRes.ok) throw new Error(`HTTP ${fetchRes.status}`);
         
         const data = await fetchRes.json();
+        // #region agent log
+        debugLog('H2', 'api/catalog.js:proxy', 'catalog proxy ok', {
+            cleanCatalogId,
+            metasLength: Array.isArray(data?.metas) ? data.metas.length : -1,
+            upstreamStatus: fetchRes.status
+        });
+        // #endregion
         return res.status(200).json(data);
 
     } catch (error) {
         console.error(`[ESAY CATALOG PROXY ERROR]: ${error.message}`);
+        // #region agent log
+        debugLog('H2', 'api/catalog.js:error', 'catalog proxy error', { err: String(error.message || error) });
+        // #endregion
         return res.status(200).json({ metas: [] });
     }
 }

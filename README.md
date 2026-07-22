@@ -14,7 +14,7 @@ Vecret is a serverless proxy and aggregator for **Stremio and Kodi** addons, bui
 
 ### Pre-sort + bucket quotas (`drawWithOverflow`)
 * Pre-sorts by resolution, source quality, size tier, visual (HDR family), and audio.
-* Splits VIP sources (Kan-Box / AnimeIL) from standard streams.
+* Splits VIP sources (Kan-Box / AnimeIL / Telegram / Your Media) from standard streams.
 * Buckets standard streams into `4K|1080p|720p|SD` × `Cached|Uncached`.
 * **`drawWithOverflow`:** fill Cached quota first; missing Cached slots borrow from Uncached; leftover Cached can backfill Uncached shortage. Order: 4K → 1080p → 720p → SD.
 * Enforces a **minimum of 2 items per resolution** when available.
@@ -86,12 +86,14 @@ User keys are taken from the **URL path** (`/<USER_KEY>/manifest.json`, `/<USER_
 
 ## User Profiles
 
-| Profile | maxResults | maxSizeGB | minSeeders (uncached) | timeoutMs | Quota set |
+| Profile | maxResults | Size soft-cap | minSeeders (uncached) | timeoutMs | Quota set |
 | --- | --- | --- | --- | --- | --- |
 | `everything` | 30 | ∞ | 1 | **9500** | big (reserve 3/3/3) |
 | `friends_heavy` | 30 | ∞ | 3 | **9500** | big |
-| `friends_light` | 10 | 30 | 4 | 9000 | small (reserve 1/1/1) |
-| `family` | 10 | 30 | 4 | 9000 | small |
+| `friends_light` | 10 | **30GB movies / 10GB episodes** | 4 | 9000 | small (reserve 1/1/1) |
+| `family` | 10 | **30GB movies / 10GB episodes** | 4 | 9000 | small |
+
+If every stream exceeds the soft-cap, results are still returned (never leave the user with an empty list due to size alone).
 
 Capable clients (User-Agent containing `nuvio`, `kodi`, or `libmpv`) are bumped to **9500ms** even on light profiles.
 
