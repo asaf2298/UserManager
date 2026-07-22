@@ -211,7 +211,7 @@ function formatForStremio(streams) {
       '_sourceBaseUrl', '_text', '_sizeGB', '_effectiveSizeGB', '_isEpisodeQuery', '_isCached', '_isUsenet',
       '_isVip', '_isNotice', '_seeders', '_resWeight', '_qualityWeight',
       '_visualWeight', '_audioWeight', '_langWeight', '_weightTier',
-      '_releaseYear', '_fakeHdrPenalized'
+      '_releaseYear', '_fakeHdrPenalized', '_upscalePenalized'
     ];
     keysToDelete.forEach(k => delete stream[k]);
     return stream;
