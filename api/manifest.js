@@ -51,7 +51,7 @@ export default async function handler(req, res) {
                         
                         restKanboxCatalogs = remainingCatalogs.map(cat => ({
                             ...cat,
-                            name: cat.name.includes('Israeli') ? cat.name : `Israeli - ${cat.name}`
+                            name: cat.name.includes('Israeli') ? cat.name : `IL - ${cat.name}`
                         }));
                     }
                 }
@@ -76,8 +76,8 @@ export default async function handler(req, res) {
         }
 
         const unifiedSearchCatalogs = [
-            { id: "esay_mixed_search_movie", type: "movie", name: "Esay - חיפוש משולב", extra: [{ name: "search", isRequired: true }] },
-            { id: "esay_mixed_search_series", type: "series", name: "Esay - חיפוש משולב", extra: [{ name: "search", isRequired: true }] }
+            { id: "esay_mixed_search_movie", type: "movie", name: " חיפוש משולב", extra: [{ name: "search", isRequired: true }] },
+            { id: "esay_mixed_search_series", type: "series", name: " חיפוש משולב", extra: [{ name: "search", isRequired: true }] }
         ];
 
         return res.status(200).json({
