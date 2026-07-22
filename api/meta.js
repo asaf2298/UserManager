@@ -11,7 +11,7 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 }
 
 export default async function handler(req, res) {
-    // מניעת שגיאת קאש של תוכן לייב בצד Vercel
+    // מניעת שגיאת קאש של תוכן לייב בצד Vercel (נשמר!)
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -21,25 +21,44 @@ export default async function handler(req, res) {
     try {
         const urlParts = req.url.split('?')[0].split('/');
         const metaIdx = urlParts.indexOf('meta');
-        if (metaIdx < 0 || metaIdx + 2 >= urlParts.length) return res.status(404).json({ meta: null });
+        
+        // שינוי קטן כדי לאפשר שליפת קונפיגורציה של AIO מהנתיב (משיכת ה-userKey)
+        if (metaIdx < 1 || metaIdx + 2 >= urlParts.length) return res.status(404).json({ meta: null });
 
+        const userKey = urlParts[metaIdx - 1]; 
         const type = urlParts[metaIdx + 1];
         let rawIdWithExt = urlParts[metaIdx + 2];
+        
+        // פענוח וטיפול במזהים (נשמר!)
         if (rawIdWithExt.includes('%')) rawIdWithExt = decodeURIComponent(rawIdWithExt);
-
         const idWithExt = rawIdWithExt;
         const id = idWithExt.replace('.json', '');
 
-        if (id.startsWith('tt')) return res.status(404).json({ meta: null });
+        // 🔴 השורה הזו הוסרה כדי לאפשר לסרטים/סדרות מ-IMDb לקבל מידע!
+        // if (id.startsWith('tt')) return res.status(404).json({ meta: null });
+
+        // טעינת משתני סביבה כדי להכיר את שרת ה-AIO והשרת הישראלי
+        const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
+        const userConfig = configs[userKey] || {};
+        const catalogBaseUrl = (userConfig.catalogBase || '').replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
 
         const tvAddonUrl = process.env.TV_ADDON_URL;
-        if (!tvAddonUrl) return res.status(404).json({ meta: null });
+        const cleanTvUrl = tvAddonUrl ? tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '') : '';
 
-        const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-        
+        // הלוגיקה שלך לניתוב ערוצים (נשמר!)
         const forwardType = (type === 'tv' || type === 'channel') ? 'series' : type;
-        const targetUrl = `${cleanTvUrl}/meta/${forwardType}/${idWithExt}`;
 
+        // 🟢 ניתוב חכם: מה ששלנו הולך לישראלי, הכל השאר (AIO) הולך ל-catalogBaseUrl
+        let targetUrl = '';
+        if (id.startsWith('dbz:') || id.startsWith('il_') || type === 'tv' || type === 'channel') {
+            if (!cleanTvUrl) return res.status(404).json({ meta: null });
+            targetUrl = `${cleanTvUrl}/meta/${forwardType}/${idWithExt}`;
+        } else {
+            if (!catalogBaseUrl) return res.status(404).json({ meta: null });
+            targetUrl = `${catalogBaseUrl}/meta/${type}/${idWithExt}`;
+        }
+
+        // חילוץ IP להדרים כדי למנוע חסימה (נשמר!)
         const forwardedIps = req.headers['x-forwarded-for'] || '';
         const clientIp = forwardedIps ? forwardedIps.split(',')[0].trim() : (req.socket?.remoteAddress || '');
 
@@ -54,9 +73,11 @@ export default async function handler(req, res) {
         if (response.ok) {
             const data = await response.json();
             if (data && data.meta) {
+                // דריסת מזהים (נשמר!)
                 data.meta.type = type; 
                 data.meta.id = id;
 
+                // יצירת תיאור לערוצים בלייב (נשמר הלוגיקה שלך אחד לאחד!)
                 if ((type === 'tv' || type === 'channel')) {
                     const channelName = data.meta.name || id.replace(/_/g, ' ');
                     if (!data.meta.description || data.meta.description.trim() === '') {
