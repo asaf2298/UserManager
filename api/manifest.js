@@ -85,26 +85,20 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            // === שינוי 2: הקפצת גרסה ===
-            version: "2.5.2", 
+            version: "2.6.0",
             name: `Esay - ${userConfig.name || userKey}`,
             description: "Esay Aggregator with Unified Search & LiveTV Israel",
-            // הוספנו כאן את כל הקידומות המבוקשות:
-            // tt/tmdb: סטנדרט
-            // il_: ערוצים ישראלים
-            // mal/kitsu: אנימה
-            // tvdb: סדרות ישנות/אחרות
-            // http/https: סטרימינג ישיר
-            idPrefixes: ["tt", "tmdb", "il_", "mal", "kitsu", "tvdb", "http", "https", "dbz:"],
+            // tt/tmdb: סטנדרט | il_/dbz: ישראלי | mal/kitsu/anilist/anidb: אנימה
+            // tvdb: סדרות | http/https: סטרימינג ישיר (Yuki ודומים)
+            idPrefixes: ["tt", "tmdb", "il_", "mal", "kitsu", "anilist", "anidb", "tvdb", "http", "https", "dbz:"],
             resources: [
-                "stream", 
-                "catalog", 
+                "stream",
+                "catalog",
                 "meta",
                 {
                     name: "subtitles",
-                    types: ["movie", "series", "anime"], // סטרימיו יבקש כתוביות רק עבור התוכן הזה!
-                    // === שינוי 3: הוספת "dbz:" לכתוביות ===
-                    idPrefixes: ["tt", "tmdb:", "kitsu:", "mal:", "tvdb", "http", "https", "dbz:"]
+                    types: ["movie", "series", "anime"],
+                    idPrefixes: ["tt", "tmdb:", "kitsu:", "mal:", "anilist:", "anidb:", "tvdb", "http", "https", "dbz:"]
                 }
             ],
             types: ["movie", "series", "anime", "tv", "channel"],
