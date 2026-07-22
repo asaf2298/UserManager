@@ -6,13 +6,15 @@ import {
 } from '../lib/utils.js';
 
 const PROFILES = {
-  everything: { maxResults: 30, maxSizeGB: Infinity, minSeedersUncached: 1, timeoutMs: 9000 },
-  family: { maxResults: 10, maxSizeGB: 30, minSeedersUncached: 4, timeoutMs: 9000 },
+  // Capable profiles push closer to Vercel's ~10s ceiling for richer fan-out
+  everything: { maxResults: 30, maxSizeGB: Infinity, minSeedersUncached: 1, timeoutMs: 9500 },
+  friends_heavy: { maxResults: 30, maxSizeGB: Infinity, minSeedersUncached: 3, timeoutMs: 9500 },
   friends_light: { maxResults: 10, maxSizeGB: 30, minSeedersUncached: 4, timeoutMs: 9000 },
-  friends_heavy: { maxResults: 30, maxSizeGB: Infinity, minSeedersUncached: 3, timeoutMs: 9000 }
+  family: { maxResults: 10, maxSizeGB: 30, minSeedersUncached: 4, timeoutMs: 9000 }
 };
 
-const MAX_VIP_SLOTS = 6;
+const MAX_VIP_SLOTS = 3;
+const MIN_PER_RESOLUTION = 2;
 
 function applyQuotasAndSlice(streams, profileConfig, maxResults) {
   const vipStreams = [];
@@ -33,8 +35,9 @@ function applyQuotasAndSlice(streams, profileConfig, maxResults) {
   }
 
   const isBigProfile = (profileConfig === 'everything' || profileConfig === 'friends_heavy');
+  // Cached-first quotas; uncached absorbs shortage via drawWithOverflow
   const quotas = isBigProfile
-    ? { '4k_c': 12, '4k_u': 3, '1080p_c': 6, '1080p_u': 2, '720p_c': 3, '720p_u': 1, 'sd_c': 2, 'sd_u': 1 }
+    ? { '4k_c': 12, '4k_u': 3, '1080p_c': 6, '1080p_u': 3, '720p_c': 3, '720p_u': 1, 'sd_c': 2, 'sd_u': 1 }
     : { '4k_c': 3, '4k_u': 1, '1080p_c': 3, '1080p_u': 1, '720p_c': 2, '720p_u': 0, 'sd_c': 0, 'sd_u': 0 };
 
   const standardResult = [];
@@ -54,16 +57,38 @@ function applyQuotasAndSlice(streams, profileConfig, maxResults) {
     return missing;
   }
 
+  // Fill Cached first per resolution: 4K -> 1080p -> 720p -> SD
   drawWithOverflow('4k', quotas['4k_c'], quotas['4k_u']);
   drawWithOverflow('1080p', quotas['1080p_c'], quotas['1080p_u']);
   drawWithOverflow('720p', quotas['720p_c'], quotas['720p_u']);
   drawWithOverflow('sd', quotas['sd_c'], quotas['sd_u']);
+
+  // Enforce minimum of 2 items per resolution when available (pull from leftover buckets)
+  for (const resLevel of ['4k', '1080p', '720p', 'sd']) {
+    const countInResult = standardResult.filter(s => {
+      const rw = getResWeight(s);
+      return (resLevel === '4k' && rw === 4) ||
+        (resLevel === '1080p' && rw === 3) ||
+        (resLevel === '720p' && rw === 2) ||
+        (resLevel === 'sd' && rw <= 1);
+    }).length;
+    let need = Math.max(0, MIN_PER_RESOLUTION - countInResult);
+    while (need > 0) {
+      const fromC = buckets[`${resLevel}_c`].splice(0, 1);
+      const fromU = fromC.length ? [] : buckets[`${resLevel}_u`].splice(0, 1);
+      const taken = fromC.length ? fromC : fromU;
+      if (!taken.length) break;
+      standardResult.push(...taken);
+      need--;
+    }
+  }
 
   const quotaOverflow = [];
   for (const key of Object.keys(buckets)) {
     if (buckets[key].length > 0) quotaOverflow.push(...buckets[key]);
   }
 
+  // VIP always first in line, capped
   const cappedVipStreams = vipStreams.slice(0, MAX_VIP_SLOTS);
   let finalCandidates = [...cappedVipStreams, ...standardResult];
   let missingSlots = maxResults - finalCandidates.length;
@@ -76,8 +101,9 @@ function applyQuotasAndSlice(streams, profileConfig, maxResults) {
 
   finalCandidates.sort(masterSortFunc);
 
-  const isLargeProfile = maxResults >= 30;
-  const resCount = isLargeProfile ? 2 : 1;
+  // Reserve uncached 4K / uncached 1080p / Direct Web slots
+  // Big profiles: 3 each; light/family: 1 each
+  const resCount = isBigProfile ? 3 : 1;
 
   const nonVipStreams = finalCandidates.filter(s => !isVIPSource(s));
 
@@ -107,6 +133,11 @@ function applyQuotasAndSlice(streams, profileConfig, maxResults) {
   const reservedU1080p = poolUncached1080p.splice(0, resCount);
   const reservedDirectWeb = poolDirectWeb.splice(0, resCount);
 
+  console.log(
+    `[ESAY QUOTA] profile=${profileConfig} vip=${cappedVipStreams.length}/${MAX_VIP_SLOTS}` +
+    ` reserve U4K=${reservedU4K.length} U1080=${reservedU1080p.length} web=${reservedDirectWeb.length}`
+  );
+
   const restToFill = [...poolMain, ...poolUncached4K, ...poolUncached1080p, ...poolDirectWeb];
   restToFill.sort(masterSortFunc);
 
@@ -117,6 +148,7 @@ function applyQuotasAndSlice(streams, profileConfig, maxResults) {
   const combinedStandardAndUncached = [...standardFill, ...reservedU4K, ...reservedU1080p];
   combinedStandardAndUncached.sort(masterSortFunc);
 
+  // VIP always first
   return [...cappedVipStreams, ...combinedStandardAndUncached, ...reservedDirectWeb];
 }
 
@@ -151,7 +183,8 @@ function formatForStremio(streams) {
     const keysToDelete = [
       '_sourceBaseUrl', '_text', '_sizeGB', '_effectiveSizeGB', '_isEpisodeQuery', '_isCached', '_isUsenet',
       '_isVip', '_seeders', '_resWeight', '_qualityWeight',
-      '_visualWeight', '_audioWeight', '_langWeight', '_weightTier'
+      '_visualWeight', '_audioWeight', '_langWeight', '_weightTier',
+      '_releaseYear', '_fakeHdrPenalized'
     ];
     keysToDelete.forEach(k => delete stream[k]);
     return stream;
@@ -188,6 +221,11 @@ function logDiagnostics(finalSliced) {
     console.log(`[ESAY DIAGNOSTIC] 🚨 אזהרה: יש ${invisibleDrops} כפילויות InfoHash ברשימה! סטרימיו יציג בפועל רק ${finalSliced.length - invisibleDrops} תוצאות.`);
   }
   console.log(`[ESAY DIAGNOSTIC] 🏁 סיום מוצלח. נשלחו ${finalSliced.length} תוצאות.\n--------------------------------------------------\n`);
+}
+
+function isCapableClient(ua) {
+  const u = (ua || '').toLowerCase();
+  return u.includes('nuvio') || u.includes('libmpv') || u.includes('kodi');
 }
 
 export default async function handler(req, res) {
@@ -254,8 +292,14 @@ export default async function handler(req, res) {
 
     const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
     const profileConfig = configs[userKey]?.profile || 'friends_light';
-    const profile = PROFILES[profileConfig] || PROFILES.friends_light;
+    const profile = { ...(PROFILES[profileConfig] || PROFILES.friends_light) };
     const addons = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
+
+    // Capable clients (Nuvio etc.) get the full near-ceiling budget even on light profiles
+    if (isCapableClient(clientUA) && profile.timeoutMs < 9500) {
+      console.log(`[ESAY STREAM] 🚀 Capable client detected (${clientUA.substring(0, 40)}) → timeout 9500ms`);
+      profile.timeoutMs = 9500;
+    }
 
     if (addons.length === 0) return res.status(200).json({ streams: [] });
 
@@ -265,7 +309,8 @@ export default async function handler(req, res) {
       minSeedersUncached: profile.minSeedersUncached,
       addons,
       clientUA,
-      clientIp
+      clientIp,
+      queryHint: decodeURIComponent(req.url || '')
     };
 
     const allValidStreams = await fetchAndSortStreams(type, idWithExt, engineContext);

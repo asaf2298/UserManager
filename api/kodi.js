@@ -22,7 +22,7 @@ export default async function handler(req, res) {
       : `${imdb_id}.json`;
 
     const engineContext = {
-      timeoutMs: 8500,
+      timeoutMs: 9500,
       maxSizeGB: Infinity,
       minSeedersUncached: 1,
       addons: (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean),

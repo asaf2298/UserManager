@@ -1,137 +1,124 @@
-# 🚀 UserManager-Stremio (Vecret Proxy)
+# UserManager-Stremio (Vecret / Esay Proxy)
 
-Vecret is a highly-optimized, serverless proxy and aggregator for **Stremio and KODI** addons, built to run on Vercel. It fetches, filters, pre-sorts, and deduplicates streams and subtitles from multiple addons simultaneously, delivering a blazing-fast, customizable, and buffer-free media experience based on granular user profiles.
-
----
-
-## 🌟 תכונות מרכזיות (Key Features)
-
-* **מנגנון מירוץ דו-שלבי חכם (Smart Adaptive Timeout):**
-  * הפרוקסי פונה לכל התוספים במקביל. כברירת מחדל, המערכת ממתינה **5.5 שניות** (`INITIAL_WAIT_MS`).
-  * **אם נאספו מספיק תוצאות** (לפחות חצי ממכסת הפרופיל) 👈 המערכת חותכת מיד למיון ושולחת את התוצאות לנגן במהירות שיא.
-  * **אם התוצאות דלות** 👈 המערכת מנצלת באופן דינמי את יתרת הזמן שהוגדרה בפרופיל (עד 9.5 שניות) כדי לגרד מקורות מתוספים איטיים.
-
-* **אלגוריתם המיון המוזהב (Pre-Sorting & Bucket Sort):**
-  * כדי למנוע מקבצים פחות איכותיים לעקוף קבצים מובחרים, המערכת מבצעת **קדם-מיון (Pre-Sort) קפדני** על כל המאגר הגולמי לפני חלוקתו לדליים. המיון מבוסס על משקלי רזולוציה, קודקים, איכות שמע, כתוביות מובנות, כמות סידרים וגודל קובץ.
-  * **איחוד משקל HDR:** כל משפחת ה-HDR (Dolby Vision, HDR10, HDR10+, ו-HDR רגיל) מקבלות עדיפות שווה וגבוהה (2 נקודות) כדי לאפשר בחירה חופשית של הסטרים המתאים ביותר למסך שלך.
-  * **ניהול מכסות וגלישת עודפים (`drawWithOverflow`):** התוצאות מחולקות לדליים ייעודיים לפי רזולוציה וסוג (קאש מול טורנט להורדה). המערכת שואפת למלא את מכסת ה-Cached קודם. אם חסר קאש – היא מפצה על כך באנ-קאש, ואם חסר אנ-קאש – היא משלימה מקאש עודף כדי שהרשימה תמיד תישאר מלאה וזמינה.
-
-* **תמיכה מורחבת ושירותים מתקדמים (Broad Services Integration):**
-  * זיהוי אוטומטי ותמיכה בשירותי פרימיום (Debrid מרובים), ספקי מטא-דאטה חיצוניים חלופיים (AIOMETADATA ואחרים), ואינטגרציה חלקה מול פרוטוקולים שונים כדי להבטיח זמינות תוכן מקסימלית.
-  * **הבחנה חכמה בין סוגי מקורות:**
-    * **זמין לצפייה (Cached):** קבצים המוזרמים ישירות משרתי ענן.
-    * **מרשת דפדפן (Direct Web):** לינקים ישירים של `HTTP` המזוהים כצפייה ישירה (כמו Kan-Box או AnimeIL) שאינם דורשים Debrid.
-    * **Usenet:** לינקי HTTP המזוהים כ-Usenet מסומנים כ"זמין לצפייה" **אך ורק** אם הם מכילים מילות מפתח מפורשות של שרת ענן. אחרת, הם מתויגים כטורנט רגיל הדורש הורדה.
-
-* **מערך כתוביות חכם וחסין קריסות (Resilient & Smart Subtitles):**
-  * **דירוג לפי אורך סרט (Duration Matching):** המערכת מנתחת את הכתוביות שנאספו ונותנת **ניקוד גבוה יותר לכתוביות שאורך הזמן שלהן תואם במדויק לאורך הסרט/הפרק**. זה מבטיח סנכרון מושלם (Sync) ומונע הצגת כתוביות של גרסאות Director's Cut או Extended על גרסאות רגילות (ולהפך).
-  * **עקיפת SSL (Self-Signed Certificates):** מונע קריסות שרת במקרים בהם תוספי כתוביות (כמו `sub.scary.network`) משתמשים בתעודות אבטחה לא חתומות.
-  * **תיוג מקורות דינמי:** מוסיף בסוגריים את שם הספק האמיתי (`[opensubtitles-v3]`, `[ktuvit]`) לצד שם הכתובית בנגן מבלי לדרוס את תיאור הקובץ המקורי.
-  * **זמן תגובה מקסימלי:** מוגבל ל-9 שניות קשיחות כדי למנוע מ-Vercel להוריד את השאלטר.
-
-* **סינון וסידור קטלוגים ישראלי (Kan-Box Catalog Styling):**
-  המערכת טוענת את קטלוגי Kan-Box באופן דינמי: הקטלוג הראשון (הטלוויזיה החיה) מוצג בראש רשימת הקטלוגים של התוסף, שני הקטלוגים האחרונים של התוסף מסוננים החוצה אוטומטית, והשאר מקבלים תיוג יפה של `Israeli - ` או `IL - ` לפני שמם.
+Vecret is a serverless proxy and aggregator for **Stremio and Kodi** addons, built for **Vercel Serverless Functions**. It fans out to multiple upstream addons in parallel, then filters, pre-sorts, deduplicates, and quota-slices streams and subtitles into a fast, profile-aware response.
 
 ---
 
-## 🛠️ הגדרת משתני סביבה ב-Vercel (Environment Variables)
+## Key Features
 
-כדי שהמערכת תתפקד, יש להגדיר ב-Vercel את המשתנים הבאים בסעיף **Settings -> Environment Variables**:
+### Smart two-phase stream timeout
+* Fans out to all stream addons in parallel.
+* Waits an initial **5.5s** burst (`INITIAL_WAIT_MS`), then uses the remaining profile budget (up to **9.5s** on `everything` / `friends_heavy`, and for capable clients like Nuvio/Kodi).
+* **Multi-language text-search backup** (English / Hebrew / Russian / original title) runs **sequentially and only if** the primary IMDb/TMDB id fan-out returned fewer than 4 raw hits — preserving Vercel time.
+* If the request hints at dubbed content (`דיבוב` / `מדובב`), Hebrew titles are preferred for text search.
 
-### רשימת המשתנים הנדרשים:
+### Pre-sort + bucket quotas (`drawWithOverflow`)
+* Pre-sorts by resolution, source quality, size tier, visual (HDR family), and audio.
+* Splits VIP sources (Kan-Box / AnimeIL) from standard streams.
+* Buckets standard streams into `4K|1080p|720p|SD` × `Cached|Uncached`.
+* **`drawWithOverflow`:** fill Cached quota first; missing Cached slots borrow from Uncached; leftover Cached can backfill Uncached shortage. Order: 4K → 1080p → 720p → SD.
+* Enforces a **minimum of 2 items per resolution** when available.
+* VIP capped at **3**, always listed first.
+* Reserved slots after quotas:
+  * `everything` / `friends_heavy`: up to **3** Uncached 4K, **3** Uncached 1080p, **3** Direct Web
+  * `friends_light` / `family`: **1** of each
 
-| שם המשתנה | תפקיד המשתנה | דוגמה לערך תקין |
+### Dynamic Hebrew stream tags
+* `זמין לצפייה` — Cached / Debrid-ready
+* `דורש המתנה ואולי כניסה חוזרת` — Uncached torrent (needs download)
+* `מרשת דפדפן` — Direct HTTP / VIP web
+* `(לנגן תומך)` — appended when `notWebReady` (HEVC / advanced codecs)
+
+### Uncached detection (MediaFusion & friends)
+Streams are forced into the Uncached bucket when titles/ids contain signals such as:
+`⏳` `⌛` `uncached` / `un-cached` / `not cached`, `⬇️` / `download` / `downloading`, `download to debrid`, `to debrid`, `instant=false`, `cached:no`, `[DL]`, etc. (spaces / hyphens / underscores optional).
+
+### Fake HDR penalty (pre-2015)
+True HDR/DV/HLG tags (`HDR`, `HDR10`, `HDR10+`, `HLG`, `Dolby Vision`, `DoVi`, `DV` with safe boundaries) still boost visual score. If the title’s release year is **before 2015** and it still carries those tags, a **significant scoring penalty** is applied so fake upscales do not outrank honest SDR remuxes/rips.
+
+### Smart subtitles
+* Dynamic race: at **6s**, cut early if ≥3 Hebrew subs; otherwise extend to **9s**.
+* Language allowlist (he / en / ru); if none match, **any available format** is returned as fallback.
+* **Duration matching (±5%):** compares subtitle duration (provider fields, title patterns, or a light SRT peek) to TMDB/Cinemeta runtime. Matches get a large bonus and rise to the top.
+* Display titles include provider, score (`★N`), and sync/duration hints.
+* All subtitle URLs are routed through `/api/sub-proxy`, which re-emits bodies as **UTF-8** (strips Windows-1255 / ISO-8859-8 legacy encodings).
+
+### Israeli catalogs (Kan-Box)
+Live TV catalog is promoted to the top of the manifest; remaining Kan-Box catalogs are prefixed with `IL - ` when needed. Personalized AIOMETADATA catalogs are merged per user `catalogBase`.
+
+---
+
+## Environment Variables (Vercel)
+
+| Variable | Role | Example |
 | --- | --- | --- |
-| `ADDON_URLS` | רשימת אדאוני הסטרימינג לחיפוש (מופרדים ב-`|||`) | `https://kan-box-addon.vercel.app|||https://torrentio.strem.fun/sort=...` |
-| `SUBTITLE_URLS` | רשימת אדאוני הכתוביות לחיפוש (מופרדים ב-`|||`) | `https://opensubtitles-v3.strem.io|||https://sub.scary.network` |
-| `TV_ADDON_URL` | כתובת האדאון הייעודי לערוצי טלוויזיה ישראלים חיים | `https://kan-box-addon.vercel.app` |
-| `TMDB_API_KEY` | מפתח ה-API הקצר של TMDB (גרסת v3 Auth בלבד!) | `KEY...` |
-| `USER_CONFIGS` | אובייקט JSON המגדיר את הפרופילים ומפתחות הגישה של המשתמשים | *(ראה מבנה בהמשך)* |
+| `ADDON_URLS` | Stream addon bases, separated by `\|\|\|` | `https://torrentio.strem.fun/sort=...\|\|\|https://...` |
+| `SUBTITLE_URLS` | Subtitle addon bases, separated by `\|\|\|` | `https://opensubtitles-v3.strem.io\|\|\|https://sub.scary.network` |
+| `TV_ADDON_URL` | Israeli live / Kan-Box addon base | `https://kan-box-addon.vercel.app` |
+| `TMDB_API_KEY` | TMDB v3 API key (titles, year, runtime) | `KEY...` |
+| `USER_CONFIGS` | JSON map of user keys → profile / catalog | *(see below)* |
+| `AIOMETADATA_URL` | Fallback metadata base for Kodi catalog only | `https://aiometadata...` |
 
-> ⚠️ **חשוב מאוד:** אין להכניס `/manifest.json` בסוף הקישורים של האדאונים במשתני הסביבה! המערכת מנקה אותם לבד, אך עדיף להזין כתובת בסיס נקייה לחלוטין.
+> Do **not** append `/manifest.json` to addon URLs in env vars.
 
-### מבנה ה-JSON של המשתנה `USER_CONFIGS`:
+### `USER_CONFIGS` shape
 
 ```json
 {
   "my_secret_master_key": {
     "profile": "everything",
-    "catalogBase": "[https://aiometadata.elfhosted.com/stremio/YOUR_KEY](https://aiometadata.elfhosted.com/stremio/YOUR_KEY)"
+    "catalogBase": "https://aiometadata.elfhosted.com/stremio/YOUR_KEY",
+    "name": "Master"
   },
   "friend_key_1": {
     "profile": "friends_heavy",
-    "catalogBase": "[https://aiometadata.elfhosted.com/stremio/FRIEND_KEY](https://aiometadata.elfhosted.com/stremio/FRIEND_KEY)"
+    "catalogBase": "https://aiometadata.elfhosted.com/stremio/FRIEND_KEY"
   },
   "kids_room_key": {
     "profile": "family"
   }
 }
-
 ```
 
----
-
-## ⚙️ פרופילי משתמשים זמינים (User Profiles)
-
-המערכת מיישמת הגבלות ומכסות שונות לכל פרופיל כדי להתאים לחומרה ולרוחב הפס של המשתמש:
-
-* **`everything`:** מיועד למזרימי מדיה חזקים. עד 30 תוצאות, ללא הגבלת משקל קובץ, תמיכה מלאה ב-HDR ו-HD Audio. טיימאאוט: 9 שניות.
-* **`friends_heavy`:** עד 30 תוצאות, ללא הגבלת משקל קובץ, תמיכה ב-HDR ובסאונד מתקדם. מינימום 3 סידרים לקבצים שאינם בקאש. טיימאאוט: 9 שניות.
-* **`friends_light`:** פרופיל מאוזן. עד 10 תוצאות, משקל קובץ מקסימלי של 30GB, מינימום 4 סידרים לקבצים שאינם בקאש. טיימאאוט: 9 שניות.
-* **`family`:** פרופיל מותאם לילדים / אינטרנט ביתי בסיסי. עד 10 תוצאות, משקל קובץ מקסימלי של 30GB, סינון אגרסיבי של קבצים ללא סידרים (מינימום 4). טיימאאוט: 9 שניות.
+User keys are taken from the **URL path** (`/<USER_KEY>/manifest.json`, `/<USER_KEY>/stream/...`). Kodi catalog uses query `userKey`.
 
 ---
 
-## 🔌 איך להתקין (Installation)
+## User Profiles
 
-### 🎬 התקנה ב-Stremio:
+| Profile | maxResults | maxSizeGB | minSeeders (uncached) | timeoutMs | Quota set |
+| --- | --- | --- | --- | --- | --- |
+| `everything` | 30 | ∞ | 1 | **9500** | big (reserve 3/3/3) |
+| `friends_heavy` | 30 | ∞ | 3 | **9500** | big |
+| `friends_light` | 10 | 30 | 4 | 9000 | small (reserve 1/1/1) |
+| `family` | 10 | 30 | 4 | 9000 | small |
 
-1. העתק את הכתובת של ה-Vercel Deployment שלך.
-2. הרכב את הקישור בצורה הבאה: `https://<YOUR-VERCEL-DOMAIN>/<USER_KEY>/manifest.json`
-3. פתח את אפליקציית Stremio, הדבק את הקישור שיצרת בשורת החיפוש בלשונית ה-Addons, ולחץ על **Install**.
+Capable clients (User-Agent containing `nuvio`, `kodi`, or `libmpv`) are bumped to **9500ms** even on light profiles.
 
-### 📺 התקנה ב-KODI (API ייעודי):
+---
 
-המערכת כוללת נקודת גישה (Endpoint) ייעודית, רזה ומהירה במיוחד עבור פלאגינים ב-Kodi (`api/kodi.js`).
-ה-API מריץ את אותו מנוע מיון (Stream Engine) חכם שמשרת את סטרימיו, ומחזיר עד 100 תוצאות איכותיות בפורמט JSON נקי שכולל כותרת, רזולוציה מזוהה (`4K/1080p/720p/SD`), גודל קובץ ולינק ישיר לנגן.
+## Install
 
-ניתן למשוך סטרימים באמצעות בקשות `GET` פשוטות:
+### Stremio
+1. Deploy to Vercel and set the env vars above.
+2. Install: `https://<YOUR-VERCEL-DOMAIN>/<USER_KEY>/manifest.json`
 
-**חיפוש סרט (Movie):**
+### Kodi
+Thin JSON APIs (same stream engine):
 
 ```http
-GET https://<YOUR-VERCEL-DOMAIN>/api/kodi?imdb_id=tt1234567&type=movie
-
-```
-
-**חיפוש פרק בסדרה (Series):**
-
-```http
-GET https://<YOUR-VERCEL-DOMAIN>/api/kodi?imdb_id=tt1234567&type=series&season=1&episode=1
-
+GET /api/kodi?imdb_id=tt0111161&type=movie
+GET /api/kodi?imdb_id=tt0944947&type=series&season=1&episode=1
+GET /api/kodi-catalog?userKey=my_secret_master_key&list=catalogs
 ```
 
 ---
 
-## 📈 לוגים וניטור בזמן אמת (Diagnostics)
+## Diagnostics
 
-תוכל לעקוב אחר ביצועי השרת, זמני התגובה של התוספים השונים ומצב הכתוביות ישירות דרך לשונית ה-**Logs** ב-Vercel:
-
-```text
-======================================================
-[ESAY DIAGNOSTIC] 🟢 בקשת סטרים חדשה!
-[META HELPER] 📺 TMDB מצא סדרה: "The Five Star Weekend"
-[ESAY DIAGNOSTIC] ⚡ התקבלו 44 סטרימים ב-5.5 שניות. מדלג על יתרת ההמתנה ורץ למיון!
-[ESAY DIAGNOSTIC] 🏁 סיום מוצלח. נשלחו 30 תוצאות.
-======================================================
-[ESAY SUBTITLES] 📝 בקשת כתוביות חדשה התקבלה!
-[ESAY SUBTITLES] ⏱️ תוסף [https://opensubtitles-v3.strem.io](https://opensubtitles-v3.strem.io) (IMDb ID) סיים ב-242ms (הביא 8 כתוביות)
-[ESAY SUBTITLES] ⏱️ תוסף https://KEY-ktuvit-stremio... (IMDb ID) סיים ב-539ms (הביא 3 כתוביות)
-[ESAY SUBTITLES] 🏁 הליך הסתיים. נשלחו 11 כתוביות מסודרות ללקוח. (דורגו לפי התאמת זמן הסרט)
-======================================================
-
-```
+Watch Vercel **Logs** for tags such as:
+`[ESAY STREAM]`, `[ESAY QUOTA]`, `[ESAY SUBTITLES]`, `[ESAY SUB-PROXY]`, `[META HELPER]`, `[ESAY DIAGNOSTIC]`.
 
 ---
 
-*Built with passion for seamless, buffer-free, and high-quality streaming on Stremio and KODI.*
+*Built for seamless, buffer-free playback on Stremio, Nuvio, and Kodi.*
