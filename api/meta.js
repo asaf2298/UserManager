@@ -1,4 +1,5 @@
 import fetch from 'node-fetch';
+import { debugLog } from '../lib/debugLog.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -8,6 +9,14 @@ async function fetchWithTimeout(url, options, timeoutMs) {
     } finally {
         clearTimeout(timeoutId);
     }
+}
+
+async function fetchMetaJson(targetUrl, headers, timeoutMs) {
+    const response = await fetchWithTimeout(targetUrl, { headers }, timeoutMs);
+    if (!response.ok) return { ok: false, status: response.status, data: null };
+    const data = await response.json();
+    if (data && data.meta) return { ok: true, status: response.status, data };
+    return { ok: false, status: response.status, data: null };
 }
 
 export default async function handler(req, res) {
@@ -34,9 +43,6 @@ export default async function handler(req, res) {
         const idWithExt = rawIdWithExt;
         const id = idWithExt.replace('.json', '');
 
-        // 🔴 השורה הזו הוסרה כדי לאפשר לסרטים/סדרות מ-IMDb לקבל מידע!
-        // if (id.startsWith('tt')) return res.status(404).json({ meta: null });
-
         // טעינת משתני סביבה כדי להכיר את שרת ה-AIO והשרת הישראלי
         const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
         const userConfig = configs[userKey] || {};
@@ -48,16 +54,6 @@ export default async function handler(req, res) {
         // הלוגיקה שלך לניתוב ערוצים (נשמר!)
         const forwardType = (type === 'tv' || type === 'channel') ? 'series' : type;
 
-        // 🟢 ניתוב חכם: מה ששלנו הולך לישראלי, הכל השאר (AIO) הולך ל-catalogBaseUrl
-        let targetUrl = '';
-        if (id.startsWith('dbz:') || id.startsWith('il_') || type === 'tv' || type === 'channel') {
-            if (!cleanTvUrl) return res.status(404).json({ meta: null });
-            targetUrl = `${cleanTvUrl}/meta/${forwardType}/${idWithExt}`;
-        } else {
-            if (!catalogBaseUrl) return res.status(404).json({ meta: null });
-            targetUrl = `${catalogBaseUrl}/meta/${type}/${idWithExt}`;
-        }
-
         // חילוץ IP להדרים כדי למנוע חסימה (נשמר!)
         const forwardedIps = req.headers['x-forwarded-for'] || '';
         const clientIp = forwardedIps ? forwardedIps.split(',')[0].trim() : (req.socket?.remoteAddress || '');
@@ -68,29 +64,73 @@ export default async function handler(req, res) {
             'X-Forwarded-For': clientIp
         };
 
-        const response = await fetchWithTimeout(targetUrl, { headers }, 5000);
-
-        if (response.ok) {
-            const data = await response.json();
-            if (data && data.meta) {
-                // דריסת מזהים (נשמר!)
-                data.meta.type = type; 
-                data.meta.id = id;
-
-                // יצירת תיאור לערוצים בלייב (נשמר הלוגיקה שלך אחד לאחד!)
-                if ((type === 'tv' || type === 'channel')) {
-                    const channelName = data.meta.name || id.replace(/_/g, ' ');
-                    if (!data.meta.description || data.meta.description.trim() === '') {
-                        data.meta.description = `שידור חי - ${channelName}`;
-                    }
-                }
-                return res.status(200).json(data);
+        // 🟢 ניתוב חכם: מה ששלנו הולך לישראלי, הכל השאר (AIO) הולך ל-catalogBaseUrl
+        let targetUrl = '';
+        let branch = 'aio';
+        if (id.startsWith('dbz:') || id.startsWith('il_') || type === 'tv' || type === 'channel') {
+            if (!cleanTvUrl) return res.status(404).json({ meta: null });
+            targetUrl = `${cleanTvUrl}/meta/${forwardType}/${idWithExt}`;
+            branch = 'tv';
+        } else {
+            if (!catalogBaseUrl) {
+                // No AIO configured — fall through to Cinemeta for tt ids
+                targetUrl = '';
+                branch = 'none';
+            } else {
+                targetUrl = `${catalogBaseUrl}/meta/${type}/${idWithExt}`;
             }
         }
+
+        // #region agent log
+        debugLog('H3', 'api/meta.js:start', 'meta request', {
+            userKey, type, id: id.slice(0, 40), branch,
+            targetHost: targetUrl ? targetUrl.split('/').slice(0, 3).join('/') : null,
+            hasXff: !!clientIp
+        });
+        // #endregion
+
+        let result = targetUrl ? await fetchMetaJson(targetUrl, headers, 5000) : { ok: false, status: 0, data: null };
+
+        // H3: If AIO/catalogBase fails for IMDb ids, fall back to public Cinemeta so Board posters still load
+        if (!result.ok && id.startsWith('tt') && branch !== 'tv') {
+            const cineUrl = `https://v3-cinemeta.strem.io/meta/${type}/${idWithExt}`;
+            console.log(`[ESAY META] 🔄 AIO miss for ${id} — falling back to Cinemeta`);
+            result = await fetchMetaJson(cineUrl, headers, 4000);
+            // #region agent log
+            debugLog('H3', 'api/meta.js:cinemetaFallback', 'cinemeta fallback', {
+                id: id.slice(0, 40),
+                ok: result.ok,
+                status: result.status,
+                name: result.data?.meta?.name || null
+            });
+            // #endregion
+        }
+
+        if (result.ok && result.data?.meta) {
+            const data = result.data;
+            // דריסת מזהים (נשמר!)
+            data.meta.type = type; 
+            data.meta.id = id;
+
+            // יצירת תיאור לערוצים בלייב (נשמר הלוגיקה שלך אחד לאחד!)
+            if ((type === 'tv' || type === 'channel')) {
+                const channelName = data.meta.name || id.replace(/_/g, ' ');
+                if (!data.meta.description || data.meta.description.trim() === '') {
+                    data.meta.description = `שידור חי - ${channelName}`;
+                }
+            }
+            return res.status(200).json(data);
+        }
         
+        // #region agent log
+        debugLog('H3', 'api/meta.js:miss', 'meta not found', { id: id.slice(0, 40), branch, status: result.status });
+        // #endregion
         return res.status(404).json({ meta: null });
 
     } catch (error) {
+        // #region agent log
+        debugLog('H3', 'api/meta.js:error', 'meta error', { err: String(error && error.message || error) });
+        // #endregion
         return res.status(404).json({ meta: null });
     }
 }
