@@ -13,6 +13,7 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 let cachedTvCatalogIds = null;
 let lastCacheTime = 0;
 
+// פונקציה לשליפת קטלוגי טלוויזיה / ערוצים מהאד-און הישראלי
 async function getTvCatalogIds(tvAddonUrl, headers) {
     if (!tvAddonUrl) return [];
     if (cachedTvCatalogIds && (Date.now() - lastCacheTime < 1000 * 60 * 60)) {
@@ -30,15 +31,24 @@ async function getTvCatalogIds(tvAddonUrl, headers) {
     }
 }
 
-async function getSearchCatalogId(baseUrl, type, headers) {
+// פונקציה משודרגת: שולפת את כל הקטלוגים שתומכים בחיפוש + שומרת את ה-Type המקורי
+async function getSearchCatalogs(baseUrl, type, headers) {
     try {
         const res = await fetchWithTimeout(`${baseUrl}/manifest.json`, { headers }, 7500);
-        if (!res.ok) return null;
+        if (!res.ok) return [];
         const manifest = await res.json();
-        const cat = manifest.catalogs?.find(c => c.type === type && c.extra?.some(e => e.name === 'search'));
-        return cat ? cat.id : null;
+        
+        // טריק האנימה: אם חיפשו סדרה, נמשוך גם קטלוגים של אנימה
+        const targetTypes = type === 'series' ? ['series', 'anime'] : [type];
+        
+        const catalogs = manifest.catalogs?.filter(c => 
+            targetTypes.includes(c.type) && c.extra?.some(e => e.name === 'search')
+        );
+        
+        // מחזיר מערך של אובייקטים כדי לשמור על ה-type הייעודי של כל קטלוג
+        return catalogs ? catalogs.map(c => ({ id: c.id, type: c.type })) : [];
     } catch { 
-        return null; 
+        return []; 
     }
 }
 
@@ -64,7 +74,7 @@ export default async function handler(req, res) {
         if (catIdx < 1 || catIdx + 2 >= urlParts.length) return res.status(400).json({ metas: [] });
 
         const userKey = urlParts[catIdx - 1];
-        const type = urlParts[catIdx + 1];
+        const reqType = urlParts[catIdx + 1];
         const rawCatalogId = urlParts[catIdx + 2];
         const cleanCatalogId = rawCatalogId.replace('.json', '');
         const extraPart = urlParts.slice(catIdx + 3).join('/'); 
@@ -74,24 +84,40 @@ export default async function handler(req, res) {
         const tvAddonUrl = (process.env.TV_ADDON_URL || '').replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
         const catalogBaseUrl = (userConfig.catalogBase || '').replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
 
+        // ==========================================
+        // 1. טיפול בחיפוש מעורב (Mixed Search)
+        // ==========================================
         if (cleanCatalogId.startsWith('esay_mixed_search') && extraPart.includes('search=')) {
-            const [tvSearchId, aioSearchId] = await Promise.all([
-                tvAddonUrl ? getSearchCatalogId(tvAddonUrl, type, kanboxHeaders) : null,
-                catalogBaseUrl ? getSearchCatalogId(catalogBaseUrl, type, standardHeaders) : null
+            const [tvSearchCatalogs, aioSearchCatalogs] = await Promise.all([
+                tvAddonUrl ? getSearchCatalogs(tvAddonUrl, reqType, kanboxHeaders) : Promise.resolve([]),
+                catalogBaseUrl ? getSearchCatalogs(catalogBaseUrl, reqType, standardHeaders) : Promise.resolve([])
             ]);
 
             const searchPromises = [];
-            if (tvSearchId) {
-                searchPromises.push(fetchWithTimeout(`${tvAddonUrl}/catalog/${type}/${tvSearchId}/${extraPart}`, { headers: kanboxHeaders }, 7500).then(r => r.ok ? r.json() : { metas: [] }).catch(() => ({ metas: [] })));
+
+            // שליחת בקשות חיפוש לאד-און הישראלי (מאקו, דרגון בול וכו')
+            for (const cat of tvSearchCatalogs) {
+                searchPromises.push(
+                    fetchWithTimeout(`${tvAddonUrl}/catalog/${cat.type}/${cat.id}/${extraPart}`, { headers: kanboxHeaders }, 7500)
+                        .then(r => r.ok ? r.json() : { metas: [] })
+                        .catch(() => ({ metas: [] }))
+                );
             }
-            if (aioSearchId) {
-                searchPromises.push(fetchWithTimeout(`${catalogBaseUrl}/catalog/${type}/${aioSearchId}/${extraPart}`, { headers: standardHeaders }, 7500).then(r => r.ok ? r.json() : { metas: [] }).catch(() => ({ metas: [] })));
+
+            // שליחת בקשות חיפוש ל-AIO (כולל YukiStreams עם Type מותאם)
+            for (const cat of aioSearchCatalogs) {
+                searchPromises.push(
+                    fetchWithTimeout(`${catalogBaseUrl}/catalog/${cat.type}/${cat.id}/${extraPart}`, { headers: standardHeaders }, 7500)
+                        .then(r => r.ok ? r.json() : { metas: [] })
+                        .catch(() => ({ metas: [] }))
+                );
             }
 
             const results = await Promise.all(searchPromises);
             const combinedMetas = [];
             const seenIds = new Set();
             
+            // איחוד תוצאות וסינון כפילויות (לפי meta.id)
             for (const result of results) {
                 if (result && Array.isArray(result.metas)) {
                     for (const meta of result.metas) {
@@ -105,17 +131,22 @@ export default async function handler(req, res) {
             return res.status(200).json({ metas: combinedMetas });
         }
 
+        // ==========================================
+        // 2. ניתוב קטלוגים רגיל (הגנה על דרגון בול)
+        // ==========================================
         let targetUrl = '';
         let requestHeaders = standardHeaders;
         const tvCatalogIds = await getTvCatalogIds(tvAddonUrl, kanboxHeaders);
 
-        if ((type === 'tv' || type === 'channel') || tvCatalogIds.includes(cleanCatalogId)) {
+        const isDbzCatalog = cleanCatalogId.startsWith('dbz_');
+
+        if ((reqType === 'tv' || reqType === 'channel') || isDbzCatalog || tvCatalogIds.includes(cleanCatalogId)) {
             if (!tvAddonUrl) return res.status(404).json({ metas: [] });
-            targetUrl = `${tvAddonUrl}/catalog/${type}/${rawCatalogId}${extraPart ? '/' + extraPart : ''}`;
+            targetUrl = `${tvAddonUrl}/catalog/${reqType}/${rawCatalogId}${extraPart ? '/' + extraPart : ''}`;
             requestHeaders = kanboxHeaders;
         } else {
             if (!catalogBaseUrl) return res.status(404).json({ metas: [] });
-            targetUrl = `${catalogBaseUrl}/catalog/${type}/${rawCatalogId}${extraPart ? '/' + extraPart : ''}`;
+            targetUrl = `${catalogBaseUrl}/catalog/${reqType}/${rawCatalogId}${extraPart ? '/' + extraPart : ''}`;
         }
         
         const fetchRes = await fetchWithTimeout(targetUrl, { headers: requestHeaders }, 8000);
@@ -125,6 +156,7 @@ export default async function handler(req, res) {
         return res.status(200).json(data);
 
     } catch (error) {
+        console.error(`[ESAY CATALOG PROXY ERROR]: ${error.message}`);
         return res.status(200).json({ metas: [] });
     }
 }
