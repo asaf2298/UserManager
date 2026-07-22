@@ -14,7 +14,7 @@ Vecret is a serverless proxy and aggregator for **Stremio and Kodi** addons, bui
 
 ### Pre-sort + bucket quotas (`drawWithOverflow`)
 * Pre-sorts by resolution, source quality, size tier, visual (HDR family), and audio.
-* Splits VIP sources (Kan-Box / AnimeIL) from standard streams.
+* Splits VIP sources (Kan-Box / AnimeIL / Telegram / Your Media) from standard streams.
 * Buckets standard streams into `4K|1080p|720p|SD` × `Cached|Uncached`.
 * **`drawWithOverflow`:** fill Cached quota first; missing Cached slots borrow from Uncached; leftover Cached can backfill Uncached shortage. Order: 4K → 1080p → 720p → SD.
 * Enforces a **minimum of 2 items per resolution** when available.
