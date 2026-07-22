@@ -188,7 +188,12 @@ function formatForStremio(streams) {
     let cleanTitle = rawTitle.replace(REGEX_DOWNLOAD, '').replace(/\n+/g, '\n').trim();
     if (!cleanTitle) cleanTitle = cleanName || 'תוצאה ללא כותרת מהמקור';
 
-    let prefix = (isVip || isDirectWeb) ? 'מרשת דפדפן' : (isC ? 'זמין לצפייה' : 'דורש המתנה ואולי כניסה חוזרת');
+    // Real cache/direct-web status wins over the VIP flag: a VIP-branded (Telegram/Your
+    // Media/usenet-library) stream that is genuinely cached or a plain HTTP link should
+    // say so accurately, not be blanket-labeled "מרשת דפדפן" just because it's VIP.
+    // VIP only forces the "מרשת דפדפן" label when neither of those signals fired
+    // (e.g. Kan-Box/AnimeIL host links with no detectable cache markers).
+    let prefix = isDirectWeb ? 'מרשת דפדפן' : (isC ? 'זמין לצפייה' : (isVip ? 'מרשת דפדפן' : 'דורש המתנה ואולי כניסה חוזרת'));
     if (stream.behaviorHints && stream.behaviorHints.notWebReady) {
       prefix += ' (לנגן תומך)';
     }
