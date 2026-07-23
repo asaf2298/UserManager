@@ -152,6 +152,27 @@ function applyQuotasAndSlice(streams, profileConfig, maxResults) {
   return [...cappedVipStreams, ...combinedStandardAndUncached, ...reservedDirectWeb];
 }
 
+// Maps our internal resolution weight to the short label the user sees next to the provider name
+const RES_LABELS = { 4: '4K', 3: 'FHD', 2: 'HD', 1: 'SD', 0: 'SD' };
+
+/**
+ * Providers pack extra info into `name` besides their own brand, e.g.
+ * "[RD⚡] Comet 1080p" (Comet), "MediaFusion RD 2160p ⚡️" (MediaFusion),
+ * "Torrentio\n4k" (Torrentio). After stripping known debrid/uncached tags,
+ * the brand is reliably the first real word — keep just that.
+ */
+function extractProviderName(rawName, fallback) {
+  const cleaned = String(rawName || '')
+    .replace(REGEX_BRACKETS, '').replace(REGEX_PARENS, '').replace(REGEX_DOWNLOAD, '')
+    .replace(/\n+/g, ' ').replace(/[|·•]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  const tokens = cleaned.split(/\s+/).filter(Boolean);
+  for (const token of tokens) {
+    const word = token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+    if (word) return word;
+  }
+  return fallback;
+}
+
 function formatForStremio(streams) {
   return streams.map((stream, index) => {
     const isVip = isVIPSource(stream);
@@ -159,14 +180,20 @@ function formatForStremio(streams) {
     const position = index + 1;
     const isDirectWeb = isDirectWebStream(stream);
 
-    let cleanName = (stream.name || '').replace(REGEX_BRACKETS, '').replace(REGEX_PARENS, '').replace(REGEX_DOWNLOAD, '');
-    cleanName = cleanName.replace(/\n+/g, ' ').replace(/^[\s\-\|]+|[\s\-\|]+$/g, '').replace(/\s{2,}/g, ' ').trim();
+    const providerName = extractProviderName(stream.name, 'מקור');
+    const resLabel = RES_LABELS[getResWeight(stream)] ?? 'SD';
+    const cleanName = `${providerName} ${resLabel}`;
 
     let rawTitle = stream.title || stream.description || stream.behaviorHints?.filename || '';
     let cleanTitle = rawTitle.replace(REGEX_DOWNLOAD, '').replace(/\n+/g, '\n').trim();
     if (!cleanTitle) cleanTitle = cleanName || 'תוצאה ללא כותרת מהמקור';
 
-    let prefix = (isVip || isDirectWeb) ? 'מרשת דפדפן' : (isC ? 'זמין לצפייה' : 'דורש המתנה ואולי כניסה חוזרת');
+    // Real cache/direct-web status wins over the VIP flag: a VIP-branded (Telegram/Your
+    // Media/usenet-library) stream that is genuinely cached or a plain HTTP link should
+    // say so accurately, not be blanket-labeled "מרשת דפדפן" just because it's VIP.
+    // VIP only forces the "מרשת דפדפן" label when neither of those signals fired
+    // (e.g. Kan-Box/AnimeIL host links with no detectable cache markers).
+    let prefix = isDirectWeb ? 'מרשת דפדפן' : (isC ? 'זמין לצפייה' : (isVip ? 'מרשת דפדפן' : 'דורש המתנה ואולי כניסה חוזרת'));
     if (stream.behaviorHints && stream.behaviorHints.notWebReady) {
       prefix += ' (לנגן תומך)';
     }
@@ -182,9 +209,9 @@ function formatForStremio(streams) {
 
     const keysToDelete = [
       '_sourceBaseUrl', '_text', '_sizeGB', '_effectiveSizeGB', '_isEpisodeQuery', '_isCached', '_isUsenet',
-      '_isVip', '_seeders', '_resWeight', '_qualityWeight',
+      '_isVip', '_isNotice', '_seeders', '_resWeight', '_qualityWeight',
       '_visualWeight', '_audioWeight', '_langWeight', '_weightTier',
-      '_releaseYear', '_fakeHdrPenalized'
+      '_releaseYear', '_fakeHdrPenalized', '_upscalePenalized'
     ];
     keysToDelete.forEach(k => delete stream[k]);
     return stream;
