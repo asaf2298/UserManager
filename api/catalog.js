@@ -49,24 +49,68 @@ async function getTvCatalogIds(tvAddonUrl, headers) {
 }
 
 // פונקציה משודרגת: שולפת את כל הקטלוגים שתומכים בחיפוש + שומרת את ה-Type המקורי
-async function getSearchCatalogs(baseUrl, type, headers) {
+// excludeTypes: optional array of types to exclude (used by the "complete" search)
+const _manifestCache = new Map();
+async function getCachedManifest(baseUrl, headers) {
+    const cached = _manifestCache.get(baseUrl);
+    if (cached && Date.now() - cached.ts < 60_000) return cached.manifest;
     try {
         const res = await fetchWithTimeout(`${baseUrl}/manifest.json`, { headers }, 7500);
-        if (!res.ok) return [];
+        if (!res.ok) return null;
         const manifest = await res.json();
-        
-        // טריק האנימה: אם חיפשו סדרה, נמשוך גם קטלוגים של אנימה
-        const targetTypes = type === 'series' ? ['series', 'anime'] : [type];
-        
-        const catalogs = manifest.catalogs?.filter(c => 
-            targetTypes.includes(c.type) && c.extra?.some(e => e.name === 'search')
-        );
-        
-        // מחזיר מערך של אובייקטים כדי לשמור על ה-type הייעודי של כל קטלוג
-        return catalogs ? catalogs.map(c => ({ id: c.id, type: c.type })) : [];
-    } catch { 
-        return []; 
+        _manifestCache.set(baseUrl, { manifest, ts: Date.now() });
+        return manifest;
+    } catch {
+        return null;
     }
+}
+
+// Returns [{ id, type, baseUrl }, ...] — baseUrl is needed so the caller
+// knows which host to send the actual catalog/search request to.
+async function getSearchCatalogs(baseUrl, type, headers, excludeTypes = null) {
+    try {
+        const manifest = await getCachedManifest(baseUrl, headers);
+        if (!manifest) return [];
+
+        let catalogs;
+        if (excludeTypes) {
+            // "complete" mode: all searchable types EXCEPT the excluded ones
+            catalogs = manifest.catalogs?.filter(c =>
+                !excludeTypes.includes(c.type) && c.extra?.some(e => e.name === 'search')
+            );
+        } else {
+            // טריק האנימה: אם חיפשו סדרה, נמשוך גם קטלוגים של אנימה
+            const targetTypes = type === 'series' ? ['series', 'anime'] : [type];
+            catalogs = manifest.catalogs?.filter(c =>
+                targetTypes.includes(c.type) && c.extra?.some(e => e.name === 'search')
+            );
+        }
+
+        return catalogs ? catalogs.map(c => ({ id: c.id, type: c.type, baseUrl })) : [];
+    } catch {
+        return [];
+    }
+}
+
+// Collects search-capable catalogs from every addon that supports catalog search
+// (TV addon + all ADDON_URLS), excluding the user's catalogBase (aiometadata) since
+// it manages its own search entries in our manifest.
+async function getAllSearchCatalogs(tvAddonUrl, addonUrls, catalogBaseUrl, reqType, proxyHeaders, excludeTypes = null) {
+    // Every URL except catalogBase is a candidate; normalise them first
+    const cleanCatalogBase = catalogBaseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
+    const sources = [
+        ...(tvAddonUrl ? [tvAddonUrl] : []),
+        ...addonUrls
+            .map(u => u.replace(/\/manifest\.json$/i, '').replace(/\/$/, ''))
+            .filter(u => u && u !== cleanCatalogBase && u !== tvAddonUrl)
+    ];
+
+    const perSource = await Promise.all(
+        sources.map(url => getSearchCatalogs(url, reqType, proxyHeaders, excludeTypes))
+    );
+
+    // Flatten — no dedup needed because each source has a unique baseUrl+id combo
+    return perSource.flat();
 }
 
 export default async function handler(req, res) {
@@ -104,26 +148,28 @@ export default async function handler(req, res) {
         // 1. טיפול בחיפוש מעורב (Mixed Search)
         // ==========================================
         if (cleanCatalogId.startsWith('esay_mixed_search') && extraPart.includes('search=')) {
-            const [tvSearchCatalogs, aioSearchCatalogs] = await Promise.all([
-                tvAddonUrl ? getSearchCatalogs(tvAddonUrl, reqType, proxyHeaders) : Promise.resolve([]),
-                catalogBaseUrl ? getSearchCatalogs(catalogBaseUrl, reqType, proxyHeaders) : Promise.resolve([])
-            ]);
+            // Fan-out to every addon that exposes catalog/search support:
+            //   • TV addon (Kan-Box/Israeli)
+            //   • All ADDON_URLS (e.g. YukiStreams anime catalogs, etc.)
+            // We intentionally skip catalogBaseUrl (aiometadata) — it manages its own
+            // search entries in our manifest, so including it here would double-send.
+            //
+            // "חיפוש משולב - complete" queries for all types EXCEPT movie and series
+            // (those are already covered by the two standard unified searches).
+            const isComplete = cleanCatalogId === 'esay_mixed_search_complete';
+            const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
+            const allSearchCatalogs = await getAllSearchCatalogs(
+                tvAddonUrl, addonUrls, catalogBaseUrl, reqType, proxyHeaders,
+                isComplete ? ['movie', 'series'] : null
+            );
+            console.log(`[ESAY SEARCH] 🔍 ${cleanCatalogId} | ${allSearchCatalogs.length} search catalogs from ${new Set(allSearchCatalogs.map(c => c.baseUrl)).size} addons`);
 
             const searchPromises = [];
 
-            // שליחת בקשות חיפוש לאד-און הישראלי (מאקו, דרגון בול וכו')
-            for (const cat of tvSearchCatalogs) {
+            // שליחת בקשות חיפוש — כל קטלוג מושלח לשרת המתאים לו
+            for (const cat of allSearchCatalogs) {
                 searchPromises.push(
-                    fetchWithTimeout(`${tvAddonUrl}/catalog/${cat.type}/${cat.id}/${extraPart}`, { headers: proxyHeaders }, 7500)
-                        .then(r => r.ok ? r.json() : { metas: [] })
-                        .catch(() => ({ metas: [] }))
-                );
-            }
-
-            // שליחת בקשות חיפוש ל-AIO (כולל YukiStreams עם Type מותאם)
-            for (const cat of aioSearchCatalogs) {
-                searchPromises.push(
-                    fetchWithTimeout(`${catalogBaseUrl}/catalog/${cat.type}/${cat.id}/${extraPart}`, { headers: proxyHeaders }, 7500)
+                    fetchWithTimeout(`${cat.baseUrl}/catalog/${cat.type}/${cat.id}/${extraPart}`, { headers: proxyHeaders }, 7500)
                         .then(r => r.ok ? r.json() : { metas: [] })
                         .catch(() => ({ metas: [] }))
                 );

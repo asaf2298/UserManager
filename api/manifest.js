@@ -46,13 +46,28 @@ export default async function handler(req, res) {
                         // שומרים את הקטלוג הראשון שיופיע בראש הרשימה
                         firstKanboxCatalog = catalogs[0];
                         
-                        // לוקחים את שאר הקטלוגים אבל חותכים החוצה את 2 האחרונים ברשימה
+                        // לוקחים את שאר הקטלוגים
                         const remainingCatalogs = catalogs.slice(1);
                         
-                        restKanboxCatalogs = remainingCatalogs.map(cat => ({
-                            ...cat,
-                            name: cat.name.includes('Israeli') ? cat.name : `IL - ${cat.name}`
-                        }));
+                        restKanboxCatalogs = remainingCatalogs
+                            // Task 2: Hide Dragon Ball catalogs from the aggregator Board.
+                            // They're still reachable via the Kan-Box addon's own discovery page.
+                            .filter(cat => !String(cat.id || '').startsWith('dbz'))
+                            .map(cat => ({
+                                ...cat,
+                                name: cat.name.includes('Israeli') ? cat.name : `IL - ${cat.name}`,
+                                // Strip the 'search' extra so Stremio doesn't search these catalogs
+                                // directly — our "חיפוש משולב" unified searches handle Kan-Box search.
+                                // Catalogs that are ONLY a search interface (isRequired:true) are
+                                // dropped entirely; browsable ones keep their other extras.
+                                extra: cat.extra
+                                    ? cat.extra.filter(e => e.name !== 'search').length > 0
+                                        ? cat.extra.filter(e => e.name !== 'search')
+                                        : undefined
+                                    : undefined
+                            }))
+                            // Drop catalogs whose only purpose was search (now undefined extra means search-only)
+                            .filter(cat => cat.extra !== undefined);
                     }
                 }
             } catch (e) { 
@@ -80,7 +95,10 @@ export default async function handler(req, res) {
 
         const unifiedSearchCatalogs = [
             { id: "esay_mixed_search_movie", type: "movie", name: " חיפוש משולב", extra: [{ name: "search", isRequired: true }] },
-            { id: "esay_mixed_search_series", type: "series", name: " חיפוש משולב", extra: [{ name: "search", isRequired: true }] }
+            { id: "esay_mixed_search_series", type: "series", name: " חיפוש משולב", extra: [{ name: "search", isRequired: true }] },
+            // "complete" covers non-movie, non-series types from Kan-Box (anime, channel, tv)
+            // and serves as a catch-all so users can search anything not in the two standard catalogs.
+            { id: "esay_mixed_search_complete", type: "anime", name: " חיפוש משולב - complete", extra: [{ name: "search", isRequired: true }] }
         ];
 
         return res.status(200).json({
