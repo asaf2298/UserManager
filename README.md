@@ -44,7 +44,15 @@ True HDR/DV/HLG tags (`HDR`, `HDR10`, `HDR10+`, `HLG`, `Dolby Vision`, `DoVi`, `
 * All subtitle URLs are routed through `/api/sub-proxy`, which re-emits bodies as **UTF-8** (strips Windows-1255 / ISO-8859-8 legacy encodings).
 
 ### Israeli catalogs (Kan-Box)
-Live TV catalog is promoted to the top of the manifest; remaining Kan-Box catalogs are prefixed with `IL - ` when needed. Board catalogs come from Kan-Box + `חיפוש משולב` only (no external AIOMETADATA board).
+Board shows only **IL - תוכניות ערוץ 12** (`MakoVOD`) and **IL - כאן 11 דיגיטל** (`kanDigital`), plus the unified search catalogs. Other Kan-Box catalogs stay reachable via `חיפוש משולב - complete` / `full` search, not as Board rows.
+
+### Unified search
+* `חיפוש משולב` (movie / series) — ~3s soft deadline; no VIP hosts (Kan-Box / AnimeIL).
+* `חיפוש משולב - complete` — ~3s; VIP + anime/tv/channel types (excludes movie/series catalog types).
+* `חיפוש משולב - full` — ~9.5s; all types + VIP; drops metas already returned by the fast three for the same query.
+
+### Yastream Asian providers
+When Yastream is in `ADDON_URLS`, Esay accepts `kisskh:` / `idrama:` / `onetouchtv:` ids (meta + stream proxied to Yastream). Search hits that expose an IMDb id in artwork are rewritten to `tt…` so Cinemeta + the normal stream fan-out apply.
 
 ---
 

@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
 import { debugLog } from '../lib/debugLog.js';
+import { isYastreamProviderId, rewriteMetaToImdbIfKnown } from '../lib/yastream.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -11,25 +12,88 @@ async function fetchWithTimeout(url, options, timeoutMs) {
     }
 }
 
+/**
+ * Soft-deadline fan-out: return whatever settled by softMs (or all, if faster).
+ * Unsettled slots become { metas: [] }. Hard abort still enforced per-fetch via fetchWithTimeout.
+ */
+async function awaitSoftDeadline(promises, softMs) {
+    const results = new Array(promises.length).fill(null);
+    if (promises.length === 0) return results;
+
+    return await new Promise((resolve) => {
+        let settled = 0;
+        let done = false;
+        const finish = () => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            resolve(results.map(r => r || { metas: [] }));
+        };
+        const timer = setTimeout(finish, softMs);
+        promises.forEach((p, i) => {
+            Promise.resolve(p)
+                .then(v => { results[i] = v; })
+                .catch(() => { results[i] = { metas: [] }; })
+                .finally(() => {
+                    settled++;
+                    if (settled >= promises.length) finish();
+                });
+        });
+    });
+}
+
+/** Short-lived cache of meta ids from fast mixed searches — used by "full" to avoid overlap. */
+const _fastSearchIdCache = new Map(); // queryKey → { ids: Set, ts }
+const FAST_SEARCH_CACHE_TTL_MS = 60_000;
+
+function searchQueryKey(extraPart) {
+    const m = String(extraPart || '').match(/search=([^/]+)/);
+    if (!m) return null;
+    try {
+        return decodeURIComponent(m[1]).toLowerCase().trim();
+    } catch {
+        return m[1].toLowerCase().trim();
+    }
+}
+
+function rememberFastSearchIds(queryKey, mode, ids) {
+    if (!queryKey || !ids?.size) return;
+    const key = `${queryKey}::${mode}`;
+    _fastSearchIdCache.set(key, { ids: new Set(ids), ts: Date.now() });
+}
+
+function collectFastSearchIds(queryKey) {
+    if (!queryKey) return new Set();
+    const out = new Set();
+    const now = Date.now();
+    for (const mode of ['movie', 'series', 'complete']) {
+        const key = `${queryKey}::${mode}`;
+        const entry = _fastSearchIdCache.get(key);
+        if (!entry) continue;
+        if (now - entry.ts > FAST_SEARCH_CACHE_TTL_MS) {
+            _fastSearchIdCache.delete(key);
+            continue;
+        }
+        for (const id of entry.ids) out.add(id);
+    }
+    return out;
+}
+
 let cachedTvCatalogIds = null;
 let lastCacheTime = 0;
-let activeManifestFetch = null; // 🟢 התוספת שלנו: שומר על הבקשה כדי שכל שאר הבקשות המקבילות "ירכבו" עליה
+let activeManifestFetch = null;
 
-// הלוגיקה המקורית והדינמית שלך נשארת!
 async function getTvCatalogIds(tvAddonUrl, headers) {
     if (!tvAddonUrl) return [];
-    
-    // אם יש קאש חם מהשעה האחרונה - נחזיר מיד
+
     if (cachedTvCatalogIds && (Date.now() - lastCacheTime < 1000 * 60 * 60)) {
         return cachedTvCatalogIds;
     }
-    
-    // 🟢 אם כבר יש בקשה באוויר למניפסט (בגלל שסטרימיו טוען את כל ה-Board במקביל) - נמתין לה!
+
     if (activeManifestFetch) {
         return await activeManifestFetch;
     }
 
-    // מוציאים בקשה אחת בודדת, ושומרים אותה במשתנה שכולם רואים
     activeManifestFetch = (async () => {
         try {
             const res = await fetchWithTimeout(`${tvAddonUrl}/manifest.json`, { headers }, 7500);
@@ -41,15 +105,13 @@ async function getTvCatalogIds(tvAddonUrl, headers) {
         } catch (e) {
             return [];
         } finally {
-            activeManifestFetch = null; // מנקים בסיום כדי שבקשות עתידיות (בעוד שעה) יעבדו רגיל
+            activeManifestFetch = null;
         }
     })();
 
     return await activeManifestFetch;
 }
 
-// פונקציה משודרגת: שולפת את כל הקטלוגים שתומכים בחיפוש + שומרת את ה-Type המקורי
-// excludeTypes: optional array of types to exclude (used by the "complete" search)
 const _manifestCache = new Map();
 async function getCachedManifest(baseUrl, headers) {
     const cached = _manifestCache.get(baseUrl);
@@ -70,22 +132,25 @@ function isVipSearchHost(url) {
     return u.includes('kan-box-addon.vercel.app') || u.includes('animeil');
 }
 
-// Returns [{ id, type, baseUrl }, ...] — baseUrl is needed so the caller
-// knows which host to send the actual catalog/search request to.
-async function getSearchCatalogs(baseUrl, type, headers, excludeTypes = null) {
+/**
+ * @param {string|null} excludeTypes - when array, keep catalogs whose type is NOT in the list
+ * @param {boolean} allTypes - when true, every searchable catalog (full mode)
+ */
+async function getSearchCatalogs(baseUrl, type, headers, excludeTypes = null, allTypes = false) {
     try {
         const manifest = await getCachedManifest(baseUrl, headers);
         if (!manifest) return [];
 
         let catalogs;
-        if (excludeTypes) {
-            // "complete" mode: all searchable types EXCEPT the excluded ones
-            // (anime / tv / channel / … — VIP + anime live here)
+        if (allTypes) {
+            catalogs = manifest.catalogs?.filter(c =>
+                c.extra?.some(e => e.name === 'search')
+            );
+        } else if (excludeTypes) {
             catalogs = manifest.catalogs?.filter(c =>
                 !excludeTypes.includes(c.type) && c.extra?.some(e => e.name === 'search')
             );
         } else {
-            // Movie/series mixed search: exact type only (no anime/tv/channel bleed)
             catalogs = manifest.catalogs?.filter(c =>
                 c.type === type && c.extra?.some(e => e.name === 'search')
             );
@@ -97,10 +162,11 @@ async function getSearchCatalogs(baseUrl, type, headers, excludeTypes = null) {
     }
 }
 
-// Collects search-capable catalogs from every addon that supports catalog search
-// (TV addon + all ADDON_URLS).
-// includeVip: when false (movie/series חיפוש משולב), skip TV_ADDON / AnimeIL hosts.
-async function getAllSearchCatalogs(tvAddonUrl, addonUrls, reqType, proxyHeaders, excludeTypes = null, includeVip = true) {
+async function getAllSearchCatalogs(tvAddonUrl, addonUrls, reqType, proxyHeaders, {
+    excludeTypes = null,
+    includeVip = true,
+    allTypes = false
+} = {}) {
     const sources = [
         ...(includeVip && tvAddonUrl ? [tvAddonUrl] : []),
         ...addonUrls
@@ -113,15 +179,36 @@ async function getAllSearchCatalogs(tvAddonUrl, addonUrls, reqType, proxyHeaders
     ];
 
     const perSource = await Promise.all(
-        sources.map(url => getSearchCatalogs(url, reqType, proxyHeaders, excludeTypes))
+        sources.map(url => getSearchCatalogs(url, reqType, proxyHeaders, excludeTypes, allTypes))
     );
 
-    // Flatten — no dedup needed because each source has a unique baseUrl+id combo
     return perSource.flat();
 }
 
+function mergeMetas(results, { excludeIds = null, rewriteYastream = true } = {}) {
+    const combinedMetas = [];
+    const seenIds = new Set();
+
+    for (const result of results) {
+        if (!result || !Array.isArray(result.metas)) continue;
+        for (const meta of result.metas) {
+            if (!meta || !meta.id) continue;
+            let out = meta;
+            if (rewriteYastream && isYastreamProviderId(meta.id)) {
+                out = rewriteMetaToImdbIfKnown(meta);
+            }
+            if (excludeIds && excludeIds.has(out.id)) continue;
+            // Also skip if the pre-rewrite provider id was already shown by a fast search
+            if (excludeIds && excludeIds.has(meta.id)) continue;
+            if (seenIds.has(out.id)) continue;
+            seenIds.add(out.id);
+            combinedMetas.push(out);
+        }
+    }
+    return { combinedMetas, seenIds };
+}
+
 export default async function handler(req, res) {
-    // מניעת שמירת קטלוג ריק בזיכרון של Vercel
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -131,8 +218,7 @@ export default async function handler(req, res) {
     const clientUA = req.headers['user-agent'] || 'Stremio/4.4.156';
     const forwardedIps = req.headers['x-forwarded-for'] || '';
     const clientIp = forwardedIps ? forwardedIps.split(',')[0].trim() : (req.socket?.remoteAddress || '');
-    
-    // Same header set as manifest/meta — some upstreams require X-Forwarded-For
+
     const proxyHeaders = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp };
 
     try {
@@ -144,60 +230,73 @@ export default async function handler(req, res) {
         const reqType = urlParts[catIdx + 1];
         const rawCatalogId = urlParts[catIdx + 2];
         const cleanCatalogId = rawCatalogId.replace('.json', '');
-        const extraPart = urlParts.slice(catIdx + 3).join('/'); 
-        
+        const extraPart = urlParts.slice(catIdx + 3).join('/');
+
         const tvAddonUrl = (process.env.TV_ADDON_URL || '').replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
 
         // ==========================================
-        // 1. טיפול בחיפוש מעורב (Mixed Search)
+        // 1. Mixed Search (fast movie/series/complete + full)
         // ==========================================
         if (cleanCatalogId.startsWith('esay_mixed_search') && extraPart.includes('search=')) {
-            // Fan-out to every addon that exposes catalog/search support:
-            //   • TV addon (Kan-Box/Israeli) — complete search only
-            //   • All ADDON_URLS (e.g. YukiStreams anime catalogs, etc.)
-            //
-            // "חיפוש משולב - complete" = VIP + anime + tv/channel (everything except movie/series).
-            // Movie/series חיפוש משולב deliberately exclude VIP hosts and non-matching types.
             const isComplete = cleanCatalogId === 'esay_mixed_search_complete';
+            const isFull = cleanCatalogId === 'esay_mixed_search_full';
+            // VIP hosts (Kan-Box / AnimeIL) only on complete + full
+            const includeVip = isComplete || isFull;
+            // Soft deadlines: fast trio ~3s, full ~9.5s (under Vercel Hobby ceiling)
+            const softMs = isFull ? 9500 : 3000;
+            // Per-fetch hard cap slightly above soft so late responses can still land before soft fires
+            const perFetchMs = isFull ? 9500 : 4500;
+
             const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
             const allSearchCatalogs = await getAllSearchCatalogs(
                 tvAddonUrl, addonUrls, reqType, proxyHeaders,
-                isComplete ? ['movie', 'series'] : null,
-                isComplete // includeVip only for complete
+                {
+                    excludeTypes: isComplete ? ['movie', 'series'] : null,
+                    includeVip,
+                    allTypes: isFull
+                }
             );
-            console.log(`[ESAY SEARCH] 🔍 ${cleanCatalogId} | ${allSearchCatalogs.length} search catalogs from ${new Set(allSearchCatalogs.map(c => c.baseUrl)).size} addons`);
+            console.log(
+                `[ESAY SEARCH] 🔍 ${cleanCatalogId} | soft=${softMs}ms vip=${includeVip} ` +
+                `| ${allSearchCatalogs.length} catalogs / ${new Set(allSearchCatalogs.map(c => c.baseUrl)).size} addons`
+            );
 
-            const searchPromises = [];
+            const searchPromises = allSearchCatalogs.map(cat =>
+                fetchWithTimeout(
+                    `${cat.baseUrl}/catalog/${cat.type}/${cat.id}/${extraPart}`,
+                    { headers: proxyHeaders },
+                    perFetchMs
+                )
+                    .then(r => r.ok ? r.json() : { metas: [] })
+                    .catch(() => ({ metas: [] }))
+            );
 
-            // שליחת בקשות חיפוש — כל קטלוג מושלח לשרת המתאים לו
-            for (const cat of allSearchCatalogs) {
-                searchPromises.push(
-                    fetchWithTimeout(`${cat.baseUrl}/catalog/${cat.type}/${cat.id}/${extraPart}`, { headers: proxyHeaders }, 7500)
-                        .then(r => r.ok ? r.json() : { metas: [] })
-                        .catch(() => ({ metas: [] }))
-                );
-            }
+            const results = await awaitSoftDeadline(searchPromises, softMs);
+            const queryKey = searchQueryKey(extraPart);
 
-            const results = await Promise.all(searchPromises);
-            const combinedMetas = [];
-            const seenIds = new Set();
-            
-            // איחוד תוצאות וסינון כפילויות (לפי meta.id)
-            for (const result of results) {
-                if (result && Array.isArray(result.metas)) {
-                    for (const meta of result.metas) {
-                        if (!seenIds.has(meta.id)) {
-                            seenIds.add(meta.id);
-                            combinedMetas.push(meta);
-                        }
-                    }
+            let excludeIds = null;
+            if (isFull) {
+                excludeIds = collectFastSearchIds(queryKey);
+                if (excludeIds.size > 0) {
+                    console.log(`[ESAY SEARCH] 🧹 full excludes ${excludeIds.size} ids already returned by fast searches`);
                 }
             }
+
+            const { combinedMetas, seenIds } = mergeMetas(results, {
+                excludeIds,
+                rewriteYastream: true
+            });
+
+            if (!isFull) {
+                const mode = isComplete ? 'complete' : (cleanCatalogId.includes('series') ? 'series' : 'movie');
+                rememberFastSearchIds(queryKey, mode, seenIds);
+            }
+
             return res.status(200).json({ metas: combinedMetas });
         }
 
         // ==========================================
-        // 2. ניתוב קטלוגים רגיל (Kan-Box / Live TV only)
+        // 2. Regular catalogs (Kan-Box / Live TV only)
         // ==========================================
         let targetUrl = '';
         let requestHeaders = proxyHeaders;
@@ -210,11 +309,9 @@ export default async function handler(req, res) {
             targetUrl = `${tvAddonUrl}/catalog/${reqType}/${rawCatalogId}${extraPart ? '/' + extraPart : ''}`;
             requestHeaders = proxyHeaders;
         } else {
-            // No external metadata catalog provider — only Kan-Box + mixed search are advertised
             return res.status(200).json({ metas: [] });
         }
 
-        // #region agent log
         debugLog('H2', 'api/catalog.js:proxy', 'catalog proxy attempt', {
             userKey,
             cleanCatalogId,
@@ -223,26 +320,21 @@ export default async function handler(req, res) {
             targetHost: targetUrl.split('/').slice(0, 3).join('/'),
             hasXff: !!requestHeaders['X-Forwarded-For']
         });
-        // #endregion
-        
+
         const fetchRes = await fetchWithTimeout(targetUrl, { headers: requestHeaders }, 8000);
         if (!fetchRes.ok) throw new Error(`HTTP ${fetchRes.status}`);
-        
+
         const data = await fetchRes.json();
-        // #region agent log
         debugLog('H2', 'api/catalog.js:proxy', 'catalog proxy ok', {
             cleanCatalogId,
             metasLength: Array.isArray(data?.metas) ? data.metas.length : -1,
             upstreamStatus: fetchRes.status
         });
-        // #endregion
         return res.status(200).json(data);
 
     } catch (error) {
         console.error(`[ESAY CATALOG PROXY ERROR]: ${error.message}`);
-        // #region agent log
         debugLog('H2', 'api/catalog.js:error', 'catalog proxy error', { err: String(error.message || error) });
-        // #endregion
         return res.status(200).json({ metas: [] });
     }
 }

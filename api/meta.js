@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
 import { debugLog } from '../lib/debugLog.js';
+import { findYastreamBaseUrl, isYastreamProviderId } from '../lib/yastream.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -20,7 +21,6 @@ async function fetchMetaJson(targetUrl, headers, timeoutMs) {
 }
 
 export default async function handler(req, res) {
-    // מניעת שגיאת קאש של תוכן לייב בצד Vercel (נשמר!)
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -30,15 +30,13 @@ export default async function handler(req, res) {
     try {
         const urlParts = req.url.split('?')[0].split('/');
         const metaIdx = urlParts.indexOf('meta');
-        
-        // userKey is the path segment before /meta/ (kept for logging)
+
         if (metaIdx < 1 || metaIdx + 2 >= urlParts.length) return res.status(404).json({ meta: null });
 
-        const userKey = urlParts[metaIdx - 1]; 
+        const userKey = urlParts[metaIdx - 1];
         const type = urlParts[metaIdx + 1];
         let rawIdWithExt = urlParts[metaIdx + 2];
-        
-        // פענוח וטיפול במזהים (נשמר!)
+
         if (rawIdWithExt.includes('%')) rawIdWithExt = decodeURIComponent(rawIdWithExt);
         const idWithExt = rawIdWithExt;
         const id = idWithExt.replace('.json', '');
@@ -46,10 +44,8 @@ export default async function handler(req, res) {
         const tvAddonUrl = process.env.TV_ADDON_URL;
         const cleanTvUrl = tvAddonUrl ? tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '') : '';
 
-        // הלוגיקה שלך לניתוב ערוצים (נשמר!)
         const forwardType = (type === 'tv' || type === 'channel') ? 'series' : type;
 
-        // חילוץ IP להדרים כדי למנוע חסימה (נשמר!)
         const forwardedIps = req.headers['x-forwarded-for'] || '';
         const clientIp = forwardedIps ? forwardedIps.split(',')[0].trim() : (req.socket?.remoteAddress || '');
 
@@ -59,39 +55,43 @@ export default async function handler(req, res) {
             'X-Forwarded-For': clientIp
         };
 
-        // Israeli / Live TV → Kan-Box; everything else → public Cinemeta (tt ids)
+        const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
+        const yastreamBase = findYastreamBaseUrl(addonUrls, process.env.YASTREAM_URL || '');
+
         let targetUrl = '';
         let branch = 'cinemeta';
         if (id.startsWith('dbz:') || id.startsWith('il_') || type === 'tv' || type === 'channel') {
             if (!cleanTvUrl) return res.status(404).json({ meta: null });
             targetUrl = `${cleanTvUrl}/meta/${forwardType}/${idWithExt}`;
             branch = 'tv';
+        } else if (isYastreamProviderId(id)) {
+            if (!yastreamBase) {
+                console.log(`[ESAY META] ⚠️ Yastream provider id ${id.slice(0, 40)} but no Yastream URL in ADDON_URLS`);
+                return res.status(404).json({ meta: null });
+            }
+            targetUrl = `${yastreamBase}/meta/${forwardType}/${idWithExt}`;
+            branch = 'yastream';
         } else if (id.startsWith('tt')) {
             targetUrl = `https://v3-cinemeta.strem.io/meta/${type}/${idWithExt}`;
             branch = 'cinemeta';
         } else {
-            // No external metadata provider for anime/kitsu/mal/etc. ids
             targetUrl = '';
             branch = 'none';
         }
 
-        // #region agent log
         debugLog('H3', 'api/meta.js:start', 'meta request', {
             userKey, type, id: id.slice(0, 40), branch,
             targetHost: targetUrl ? targetUrl.split('/').slice(0, 3).join('/') : null,
             hasXff: !!clientIp
         });
-        // #endregion
 
         let result = targetUrl ? await fetchMetaJson(targetUrl, headers, 5000) : { ok: false, status: 0, data: null };
 
         if (result.ok && result.data?.meta) {
             const data = result.data;
-            // דריסת מזהים (נשמר!)
-            data.meta.type = type; 
+            data.meta.type = type;
             data.meta.id = id;
 
-            // יצירת תיאור לערוצים בלייב (נשמר הלוגיקה שלך אחד לאחד!)
             if ((type === 'tv' || type === 'channel')) {
                 const channelName = data.meta.name || id.replace(/_/g, ' ');
                 if (!data.meta.description || data.meta.description.trim() === '') {
@@ -100,16 +100,12 @@ export default async function handler(req, res) {
             }
             return res.status(200).json(data);
         }
-        
-        // #region agent log
+
         debugLog('H3', 'api/meta.js:miss', 'meta not found', { id: id.slice(0, 40), branch, status: result.status });
-        // #endregion
         return res.status(404).json({ meta: null });
 
     } catch (error) {
-        // #region agent log
         debugLog('H3', 'api/meta.js:error', 'meta error', { err: String(error && error.message || error) });
-        // #endregion
         return res.status(404).json({ meta: null });
     }
 }
