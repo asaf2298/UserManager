@@ -3,7 +3,7 @@
 ## Cursor Cloud specific instructions
 
 ### What this is
-Vecret ("Esay") is a **Vercel serverless proxy/aggregator for Stremio & Kodi addons**. Pure JavaScript (ES modules, `"type": "module"`), Node.js runtime, single runtime dependency (`node-fetch`). Each file under `api/*.js` is a serverless handler with the Vercel Node signature `export default async function handler(req, res)`. Shared logic lives in `lib/`. There is **no database** (in-memory caches only) and **no build step**.
+Vecret ("Personal", formerly Esay) is a **Vercel serverless proxy/aggregator for Stremio & Kodi addons**. Pure JavaScript (ES modules, `"type": "module"`), Node.js runtime, single runtime dependency (`node-fetch`). Each file under `api/*.js` is a serverless handler with the Vercel Node signature `export default async function handler(req, res)`. Shared logic lives in `lib/`. There is **no database** (in-memory caches only) and **no build step**.
 
 ### Lint / test / build
 There are **none**. `package.json` has no `scripts`, and the repo contains no test files, linter config, or build config. Do not invent these unless asked.

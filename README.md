@@ -1,4 +1,4 @@
-# UserManager-Stremio (Vecret / Esay Proxy)
+# UserManager-Stremio (Vecret / Personal Proxy)
 
 Vecret is a serverless proxy and aggregator for **Stremio and Kodi** addons, built for **Vercel Serverless Functions**. It fans out to multiple upstream addons in parallel, then filters, pre-sorts, deduplicates, and quota-slices streams and subtitles into a fast, profile-aware response.
 
