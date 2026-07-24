@@ -27,10 +27,9 @@ export default async function handler(req, res) {
         const urlParts = req.url.split('?')[0].split('/');
         const userKey = urlParts[1] || 'default';
         const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
-        const userConfig = configs[userKey] || { name: 'Unknown', catalogBase: '' };
+        const userConfig = configs[userKey] || { name: 'Unknown' };
 
         let firstKanboxCatalog = null;
-        let aioCatalogs = [];
         let restKanboxCatalogs = [];
 
         const tvAddonUrl = process.env.TV_ADDON_URL;
@@ -74,24 +73,6 @@ export default async function handler(req, res) {
                 console.error('TV Addon fetch error:', e.message); 
             }
         }
-        
-        if (userConfig.catalogBase) {
-            try {
-                const cleanCatalogBase = userConfig.catalogBase.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-                
-                // === שינוי 1: שימוש ב-kanboxHeaders כדי למנוע חסימת AIO ===
-                const catRes = await fetchWithTimeout(`${cleanCatalogBase}/manifest.json`, { headers: kanboxHeaders }, 7500);
-                
-                if (catRes.ok) {
-                    const catManifest = await catRes.json();
-                    if (catManifest?.catalogs) {
-                        aioCatalogs = catManifest.catalogs;
-                    }
-                }
-            } catch (e) { 
-                console.error('AIO fetch error:', e.message); 
-            }
-        }
 
         const unifiedSearchCatalogs = [
             { id: "esay_mixed_search_movie", type: "movie", name: " חיפוש משולב", extra: [{ name: "search", isRequired: true }] },
@@ -103,7 +84,7 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.8.0",
+            version: "2.9.0",
             name: `Esay - ${userConfig.name || userKey}`,
             description: "Esay Aggregator with Unified Search & LiveTV Israel",
             // tt/tmdb: סטנדרט | il_/dbz: ישראלי | mal/kitsu/anilist/anidb: אנימה
@@ -123,7 +104,6 @@ export default async function handler(req, res) {
             catalogs: [
                 ...(firstKanboxCatalog ? [firstKanboxCatalog] : []), // ה-First ממוקם ראשון לחלוטין
                 ...unifiedSearchCatalogs,
-                ...aioCatalogs,
                 ...restKanboxCatalogs
             ]
         });

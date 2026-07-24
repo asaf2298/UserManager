@@ -12,7 +12,7 @@
 //   PORT=3000 node dev-server.mjs
 //
 // Env vars (USER_CONFIGS, ADDON_URLS, SUBTITLE_URLS, TV_ADDON_URL,
-// TMDB_API_KEY, AIOMETADATA_URL) are read from the process environment, so a
+// TMDB_API_KEY) are read from the process environment, so a
 // `.env.local` file loaded via `node --env-file` (Node >= 20) works well.
 
 import http from 'node:http';

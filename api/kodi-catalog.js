@@ -1,6 +1,8 @@
 // api/kodi-catalog.js
-// Adapter רזה לקודי: AIOMetadata לקטלוגי VOD, Kan-Box לערוצי Live TV
+// Adapter רזה לקודי: Cinemeta לקטלוגי VOD, Kan-Box לערוצי Live TV
 import fetch from 'node-fetch';
+
+const CINEMETA_BASE = 'https://v3-cinemeta.strem.io';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
@@ -92,10 +94,8 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
-    const { userKey, type, catalogId, skip, search, list } = req.query;
-    const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
-    const userConfig = configs[userKey] || {};
-    const metadataBaseUrl = userConfig.catalogBase || process.env.AIOMETADATA_URL || '';
+    const { type, catalogId, skip, search, list } = req.query;
+    const metadataBaseUrl = CINEMETA_BASE;
     const tvAddonUrl = process.env.TV_ADDON_URL || '';
 
     // מצב חדש: ערוצי Live TV מ-Kan-Box בלבד
@@ -107,7 +107,6 @@ export default async function handler(req, res) {
     }
 
     if (list === 'catalogs') {
-      if (!metadataBaseUrl) return res.status(404).json({ error: 'AIOMETADATA_URL not configured' });
       const catalogs = await getAvailableCatalogs(metadataBaseUrl);
       return res.status(200).json({ catalogs });
     }
@@ -115,7 +114,6 @@ export default async function handler(req, res) {
     if (!type || !catalogId) {
       return res.status(400).json({ error: 'type and catalogId are required' });
     }
-    if (!metadataBaseUrl) return res.status(404).json({ error: 'AIOMETADATA_URL not configured' });
 
     const metas = await getCatalogItems(metadataBaseUrl, type, catalogId, { skip, search });
     const items = metas.map(mapMetaToKodiItem).filter(item => item.imdb_id);
