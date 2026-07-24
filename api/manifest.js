@@ -11,21 +11,29 @@ async function fetchWithTimeout(url, options, timeoutMs) {
     }
 }
 
-/** Board-only Kan-Box catalogs (browsable). Search still hits Kan-Box via complete/full. */
-const KANBOX_BOARD_CATALOG_IDS = new Set(['MakoVOD', 'kanDigital']);
+/**
+ * Prepare a Kan-Box catalog for Esay's Board/Discovery.
+ * Live TV keeps a short Hebrew name; others get an IL - prefix.
+ * Search extras are stripped so Stremio uses חיפוש משולב.
+ */
+function prepareKanboxCatalog(cat, { isLive = false } = {}) {
+    let name = cat.name || cat.id;
+    if (isLive) {
+        // User-facing label for Live_TV_Channels
+        name = 'ערוצים חיים';
+    } else if (!name.includes('Israeli') && !name.startsWith('IL - ')) {
+        name = `IL - ${name}`;
+    }
 
-function prepareKanboxBoardCatalog(cat) {
+    const nonSearchExtra = cat.extra
+        ? cat.extra.filter(e => e.name !== 'search')
+        : [];
+
     return {
         ...cat,
-        name: cat.name.includes('Israeli') || cat.name.startsWith('IL - ')
-            ? cat.name
-            : `IL - ${cat.name}`,
-        // Strip search so Stremio uses חיפוש משולב instead of per-catalog search
-        extra: cat.extra
-            ? cat.extra.filter(e => e.name !== 'search').length > 0
-                ? cat.extra.filter(e => e.name !== 'search')
-                : undefined
-            : undefined
+        name,
+        // Browsable catalogs need a defined extra array even if only search was stripped
+        extra: nonSearchExtra.length > 0 ? nonSearchExtra : []
     };
 }
 
@@ -46,7 +54,8 @@ export default async function handler(req, res) {
         const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
         const userConfig = configs[userKey] || { name: 'Unknown' };
 
-        let kanboxBoardCatalogs = [];
+        let firstKanboxCatalog = null;
+        let restKanboxCatalogs = [];
 
         const tvAddonUrl = process.env.TV_ADDON_URL;
         if (tvAddonUrl) {
@@ -56,16 +65,17 @@ export default async function handler(req, res) {
                 if (tvRes.ok) {
                     const tvManifest = await tvRes.json();
                     const catalogs = tvManifest?.catalogs || [];
-                    // Board: only Channel 12 VOD + Kan 11 Digital (ids MakoVOD / kanDigital)
-                    kanboxBoardCatalogs = catalogs
-                        .filter(cat => KANBOX_BOARD_CATALOG_IDS.has(String(cat.id || '')))
-                        .map(cat => {
-                            const prepared = prepareKanboxBoardCatalog(cat);
-                            // Browsable catalogs need a defined extra array for Stremio even if
-                            // the only original extras were search (stripped above).
-                            if (prepared.extra === undefined) prepared.extra = [];
-                            return prepared;
-                        });
+
+                    if (catalogs.length > 0) {
+                        // Prefer Live_TV_Channels as the promoted first row; fall back to catalogs[0]
+                        const liveIdx = catalogs.findIndex(c => String(c.id || '') === 'Live_TV_Channels');
+                        const liveCat = liveIdx >= 0 ? catalogs[liveIdx] : catalogs[0];
+                        firstKanboxCatalog = prepareKanboxCatalog(liveCat, { isLive: true });
+
+                        restKanboxCatalogs = catalogs
+                            .filter(cat => cat !== liveCat)
+                            .map(cat => prepareKanboxCatalog(cat));
+                    }
                 }
             } catch (e) {
                 console.error('TV Addon fetch error:', e.message);
@@ -75,18 +85,15 @@ export default async function handler(req, res) {
         const unifiedSearchCatalogs = [
             { id: "esay_mixed_search_movie", type: "movie", name: " חיפוש משולב", extra: [{ name: "search", isRequired: true }] },
             { id: "esay_mixed_search_series", type: "series", name: " חיפוש משולב", extra: [{ name: "search", isRequired: true }] },
-            // complete = VIP (Kan-Box/AnimeIL) + anime + tv/channel (excludes movie/series types)
             { id: "esay_mixed_search_complete", type: "anime", name: " חיפוש משולב - complete", extra: [{ name: "search", isRequired: true }] },
-            // full = all types + VIP, longer soft deadline; excludes ids already returned by the fast 3
             { id: "esay_mixed_search_full", type: "anime", name: " חיפוש משולב - full", extra: [{ name: "search", isRequired: true }] }
         ];
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.10.0",
-            name: `Esay - ${userConfig.name || userKey}`,
-            description: "Esay Aggregator with Unified Search & LiveTV Israel",
-            // tt/tmdb: standard | il_/dbz: Israeli | anime ids | http(s) | Yastream Asian providers
+            version: "2.10.3",
+            name: `Personal - ${userConfig.name || userKey}`,
+            description: "Personal Aggregator with Unified Search & LiveTV Israel",
             idPrefixes: [
                 "tt", "tmdb", "il_", "mal", "kitsu", "anilist", "anidb", "tvdb",
                 "http", "https", "dbz:",
@@ -108,8 +115,9 @@ export default async function handler(req, res) {
             ],
             types: ["movie", "series", "anime", "tv", "channel"],
             catalogs: [
+                ...(firstKanboxCatalog ? [firstKanboxCatalog] : []),
                 ...unifiedSearchCatalogs,
-                ...kanboxBoardCatalogs
+                ...restKanboxCatalogs
             ]
         });
     } catch (error) {
