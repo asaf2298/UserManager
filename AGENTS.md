@@ -30,7 +30,7 @@ ADDON_URLS=https://torrentio.strem.fun
 SUBTITLE_URLS=https://opensubtitles-v3.strem.io
 ```
 
-`USER_CONFIGS` is a JSON object keyed by the URL path segment (`<USER_KEY>`); `profile` / `name` configure ranking quotas and display. Catalog/meta for IMDb ids use public Cinemeta; Kan-Box Board rows are Channel 12 + Kan 11 Digital only. `TV_ADDON_URL`, `TMDB_API_KEY` are optional. Put Yastream in `ADDON_URLS` for `tt` streams and `kisskh:` / `idrama:` / `onetouchtv:` provider ids.
+`USER_CONFIGS` is a JSON object keyed by the URL path segment (`<USER_KEY>`); `profile` / `name` configure ranking quotas and display. Catalog/meta for IMDb ids use public Cinemeta; Kan-Box catalogs (live + IL VOD) appear in Discovery/Board. `TV_ADDON_URL`, `TMDB_API_KEY` are optional. Put Yastream in `ADDON_URLS` for `tt` streams and `kisskh:` / `idrama:` / `onetouchtv:` provider ids.
 
 ### Important gotcha: upstream addon egress
 The product's job is to fan out to upstream Stremio addons. **Torrentio and many public stream addons sit behind Cloudflare and return HTTP 403 from datacenter/cloud IPs**, so `stream`/`api/kodi` endpoints will return empty `{ "streams": [] }` / `{ "results": [] }` here even though the handlers run correctly — this is an egress limitation, not a bug. **Cinemeta** (`https://v3-cinemeta.strem.io`) is used for IMDb meta and is a reliable check for meta end-to-end.

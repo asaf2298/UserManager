@@ -13,8 +13,35 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 }
 
 /**
+ * Fetch + JSON under a single wall-clock budget.
+ * Covers the common hang where headers arrive but the body stalls (r.json()
+ * is not aborted by fetch's AbortSignal once the response has started).
+ */
+async function fetchJsonWithTimeout(url, options, timeoutMs) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const started = Date.now();
+    try {
+        const res = await fetch(url, { ...options, signal: controller.signal });
+        if (!res.ok) return { metas: [] };
+        const remaining = Math.max(200, timeoutMs - (Date.now() - started));
+        const data = await Promise.race([
+            res.json(),
+            new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('json-timeout')), remaining)
+            )
+        ]);
+        return data && typeof data === 'object' ? data : { metas: [] };
+    } catch {
+        return { metas: [] };
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+/**
  * Soft-deadline fan-out: return whatever settled by softMs (or all, if faster).
- * Unsettled slots become { metas: [] }. Hard abort still enforced per-fetch via fetchWithTimeout.
+ * Unsettled slots become { metas: [] }.
  */
 async function awaitSoftDeadline(promises, softMs) {
     const results = new Array(promises.length).fill(null);
@@ -238,14 +265,16 @@ export default async function handler(req, res) {
         // 1. Mixed Search (fast movie/series/complete + full)
         // ==========================================
         if (cleanCatalogId.startsWith('esay_mixed_search') && extraPart.includes('search=')) {
+            const handlerStarted = Date.now();
             const isComplete = cleanCatalogId === 'esay_mixed_search_complete';
             const isFull = cleanCatalogId === 'esay_mixed_search_full';
             // VIP hosts (Kan-Box / AnimeIL) only on complete + full
             const includeVip = isComplete || isFull;
-            // Soft deadlines: fast trio ~3s, full ~9.5s (under Vercel Hobby ceiling)
-            const softMs = isFull ? 9500 : 3000;
-            // Per-fetch hard cap slightly above soft so late responses can still land before soft fires
-            const perFetchMs = isFull ? 9500 : 4500;
+
+            // Wall-clock budget under Vercel Hobby ~10s. Discovery (manifest fan-out)
+            // eats into this; soft deadline uses whatever remains so "full" cannot stick.
+            // Fast trio target ~3s total; full target ~8s total (leave headroom).
+            const hardBudgetMs = isFull ? 8000 : 3000;
 
             const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
             const allSearchCatalogs = await getAllSearchCatalogs(
@@ -256,22 +285,36 @@ export default async function handler(req, res) {
                     allTypes: isFull
                 }
             );
+
+            const afterDiscoveryMs = Date.now() - handlerStarted;
+            // Keep at least 400ms for a partial response; never exceed remaining budget
+            const softMs = Math.max(400, hardBudgetMs - afterDiscoveryMs);
+            const perFetchMs = softMs;
+
             console.log(
-                `[ESAY SEARCH] 🔍 ${cleanCatalogId} | soft=${softMs}ms vip=${includeVip} ` +
+                `[ESAY SEARCH] 🔍 ${cleanCatalogId} | budget=${hardBudgetMs}ms discovery=${afterDiscoveryMs}ms ` +
+                `soft=${softMs}ms vip=${includeVip} ` +
                 `| ${allSearchCatalogs.length} catalogs / ${new Set(allSearchCatalogs.map(c => c.baseUrl)).size} addons`
             );
 
+            // #region agent log
+            debugLog('H-SEARCH', 'api/catalog.js:mixedSearch', 'search budget', {
+                cleanCatalogId, isFull, hardBudgetMs, afterDiscoveryMs, softMs,
+                catalogCount: allSearchCatalogs.length,
+                query: String(extraPart).slice(0, 80)
+            });
+            // #endregion
+
             const searchPromises = allSearchCatalogs.map(cat =>
-                fetchWithTimeout(
+                fetchJsonWithTimeout(
                     `${cat.baseUrl}/catalog/${cat.type}/${cat.id}/${extraPart}`,
                     { headers: proxyHeaders },
                     perFetchMs
                 )
-                    .then(r => r.ok ? r.json() : { metas: [] })
-                    .catch(() => ({ metas: [] }))
             );
 
             const results = await awaitSoftDeadline(searchPromises, softMs);
+            const afterFanoutMs = Date.now() - handlerStarted;
             const queryKey = searchQueryKey(extraPart);
 
             let excludeIds = null;
@@ -291,6 +334,15 @@ export default async function handler(req, res) {
                 const mode = isComplete ? 'complete' : (cleanCatalogId.includes('series') ? 'series' : 'movie');
                 rememberFastSearchIds(queryKey, mode, seenIds);
             }
+
+            console.log(
+                `[ESAY SEARCH] ✅ ${cleanCatalogId} done in ${afterFanoutMs}ms → ${combinedMetas.length} metas`
+            );
+            // #region agent log
+            debugLog('H-SEARCH', 'api/catalog.js:mixedSearch', 'search done', {
+                cleanCatalogId, afterFanoutMs, metas: combinedMetas.length, softMs
+            });
+            // #endregion
 
             return res.status(200).json({ metas: combinedMetas });
         }
