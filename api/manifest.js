@@ -74,12 +74,7 @@ export default async function handler(req, res) {
 
                         restKanboxCatalogs = catalogs
                             .filter(cat => cat !== liveCat)
-                            // Hide Dragon Ball from aggregator Discovery/Board
-                            .filter(cat => !String(cat.id || '').startsWith('dbz'))
-                            .map(cat => prepareKanboxCatalog(cat))
-                            // Drop search-only catalogs (no remaining extras and no browse surface)
-                            // Keep all prepared catalogs — extra is always [] at minimum for browse.
-                            ;
+                            .map(cat => prepareKanboxCatalog(cat));
                     }
                 }
             } catch (e) {
@@ -96,7 +91,7 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.10.2",
+            version: "2.10.3",
             name: `Personal - ${userConfig.name || userKey}`,
             description: "Personal Aggregator with Unified Search & LiveTV Israel",
             idPrefixes: [
