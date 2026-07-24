@@ -180,7 +180,7 @@ export default async function handler(req, res) {
             const cleanQuery = customQuery.replace(/\.json$/, '');
             const targetUrl = `${cleanBaseUrl}/subtitles/${type}/${cleanQuery}.json`;
 
-            let calculatedProvider = 'Esay Sub';
+            let calculatedProvider = 'Personal Sub';
             const match = cleanBaseUrl.match(/https?:\/\/([^\/]+)/);
             if (match && match[1]) {
                 calculatedProvider = match[1]
@@ -291,7 +291,7 @@ export default async function handler(req, res) {
             for (const sub of gatheredSubs) {
                 if (sub.url && seenUrls.has(sub.url)) continue;
                 if (sub.url) seenUrls.add(sub.url);
-                sub._providerName = sub.calculatedProvider || 'Esay Sub';
+                sub._providerName = sub.calculatedProvider || 'Personal Sub';
                 uniqueSubs.push(sub);
             }
         }
@@ -367,7 +367,7 @@ export default async function handler(req, res) {
                 }
             }
 
-            const provider = sub._providerName || 'Esay Sub';
+            const provider = sub._providerName || 'Personal Sub';
             const originalId = String(sub.id || `esay${index}`);
             const safeId = originalId.replace(/[^a-zA-Z0-9]/g, '').substring(0, 10);
             

@@ -96,9 +96,9 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.10.1",
-            name: `Esay - ${userConfig.name || userKey}`,
-            description: "Esay Aggregator with Unified Search & LiveTV Israel",
+            version: "2.10.2",
+            name: `Personal - ${userConfig.name || userKey}`,
+            description: "Personal Aggregator with Unified Search & LiveTV Israel",
             idPrefixes: [
                 "tt", "tmdb", "il_", "mal", "kitsu", "anilist", "anidb", "tvdb",
                 "http", "https", "dbz:",
