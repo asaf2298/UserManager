@@ -2,8 +2,9 @@ import fetch from 'node-fetch';
 import { fetchAndSortStreams } from '../lib/streamEngine.js';
 import {
   isCached, isVIPSource, isDirectWebStream, getResWeight,
-  masterSortFunc, REGEX_BRACKETS, REGEX_PARENS, REGEX_DOWNLOAD
+  masterSortFunc, REGEX_BRACKETS, REGEX_PARENS, REGEX_DOWNLOAD, isNoticeStream
 } from '../lib/utils.js';
+import { findYastreamBaseUrl, isYastreamProviderId } from '../lib/yastream.js';
 
 const PROFILES = {
   // Capable profiles push closer to Vercel's ~10s ceiling for richer fan-out
@@ -315,6 +316,39 @@ export default async function handler(req, res) {
         console.error(`[ESAY DIAGNOSTIC] 💥 שגיאה בשליפת ערוץ חי: ${e.message}`);
       }
       return res.status(200).json({ streams: [] });
+    }
+
+    // Yastream Asian provider ids (kisskh: / idrama: / onetouchtv:) — proxy only to Yastream.
+    // Normal tt titles still fan out to all ADDON_URLS (including Yastream) below.
+    const idNoExt = idWithExt.replace(/\.json$/i, '');
+    if (isYastreamProviderId(idNoExt)) {
+      const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
+      const yastreamBase = findYastreamBaseUrl(addonUrls, process.env.YASTREAM_URL || '');
+      if (!yastreamBase) {
+        console.log(`[ESAY STREAM] ⚠️ provider id without Yastream in ADDON_URLS: ${idNoExt.slice(0, 48)}`);
+        return res.status(200).json({ streams: [] });
+      }
+      try {
+        const targetUrl = `${yastreamBase}/stream/${type}/${idWithExt}`;
+        const headers = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp, 'Accept': 'application/json' };
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 9500);
+        let ysRes;
+        try {
+          ysRes = await fetch(targetUrl, { headers, signal: controller.signal });
+        } finally {
+          clearTimeout(timeoutId);
+        }
+        if (!ysRes.ok) return res.status(200).json({ streams: [] });
+        const ysData = await ysRes.json();
+        const raw = Array.isArray(ysData?.streams) ? ysData.streams : [];
+        const streams = raw.filter(s => s && !isNoticeStream(s));
+        console.log(`[ESAY STREAM] 🌏 Yastream provider ${idNoExt.slice(0, 40)} → ${streams.length} streams`);
+        return res.status(200).json({ streams });
+      } catch (e) {
+        console.error(`[ESAY STREAM] 💥 Yastream provider fetch: ${e.message}`);
+        return res.status(200).json({ streams: [] });
+      }
     }
 
     const configs = JSON.parse(process.env.USER_CONFIGS || '{}');

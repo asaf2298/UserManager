@@ -1,4 +1,5 @@
 import fetch from 'node-fetch';
+import { YASTREAM_MANIFEST_PREFIXES } from '../lib/yastream.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -10,6 +11,24 @@ async function fetchWithTimeout(url, options, timeoutMs) {
     }
 }
 
+/** Board-only Kan-Box catalogs (browsable). Search still hits Kan-Box via complete/full. */
+const KANBOX_BOARD_CATALOG_IDS = new Set(['MakoVOD', 'kanDigital']);
+
+function prepareKanboxBoardCatalog(cat) {
+    return {
+        ...cat,
+        name: cat.name.includes('Israeli') || cat.name.startsWith('IL - ')
+            ? cat.name
+            : `IL - ${cat.name}`,
+        // Strip search so Stremio uses חיפוש משולב instead of per-catalog search
+        extra: cat.extra
+            ? cat.extra.filter(e => e.name !== 'search').length > 0
+                ? cat.extra.filter(e => e.name !== 'search')
+                : undefined
+            : undefined
+    };
+}
+
 export default async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -18,10 +37,8 @@ export default async function handler(req, res) {
     const clientUA = req.headers['user-agent'] || 'Stremio/4.4.156';
     const forwardedIps = req.headers['x-forwarded-for'] || '';
     const clientIp = forwardedIps ? forwardedIps.split(',')[0].trim() : (req.socket?.remoteAddress || '');
-    
-    // ניהול מוקפד של Headers
+
     const kanboxHeaders = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp };
-    const standardHeaders = { 'User-Agent': clientUA };
 
     try {
         const urlParts = req.url.split('?')[0].split('/');
@@ -29,8 +46,7 @@ export default async function handler(req, res) {
         const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
         const userConfig = configs[userKey] || { name: 'Unknown' };
 
-        let firstKanboxCatalog = null;
-        let restKanboxCatalogs = [];
+        let kanboxBoardCatalogs = [];
 
         const tvAddonUrl = process.env.TV_ADDON_URL;
         if (tvAddonUrl) {
@@ -40,56 +56,42 @@ export default async function handler(req, res) {
                 if (tvRes.ok) {
                     const tvManifest = await tvRes.json();
                     const catalogs = tvManifest?.catalogs || [];
-                    
-                    if (catalogs.length > 0) {
-                        // שומרים את הקטלוג הראשון שיופיע בראש הרשימה
-                        firstKanboxCatalog = catalogs[0];
-                        
-                        // לוקחים את שאר הקטלוגים
-                        const remainingCatalogs = catalogs.slice(1);
-                        
-                        restKanboxCatalogs = remainingCatalogs
-                            // Task 2: Hide Dragon Ball catalogs from the aggregator Board.
-                            // They're still reachable via the Kan-Box addon's own discovery page.
-                            .filter(cat => !String(cat.id || '').startsWith('dbz'))
-                            .map(cat => ({
-                                ...cat,
-                                name: cat.name.includes('Israeli') ? cat.name : `IL - ${cat.name}`,
-                                // Strip the 'search' extra so Stremio doesn't search these catalogs
-                                // directly — our "חיפוש משולב" unified searches handle Kan-Box search.
-                                // Catalogs that are ONLY a search interface (isRequired:true) are
-                                // dropped entirely; browsable ones keep their other extras.
-                                extra: cat.extra
-                                    ? cat.extra.filter(e => e.name !== 'search').length > 0
-                                        ? cat.extra.filter(e => e.name !== 'search')
-                                        : undefined
-                                    : undefined
-                            }))
-                            // Drop catalogs whose only purpose was search (now undefined extra means search-only)
-                            .filter(cat => cat.extra !== undefined);
-                    }
+                    // Board: only Channel 12 VOD + Kan 11 Digital (ids MakoVOD / kanDigital)
+                    kanboxBoardCatalogs = catalogs
+                        .filter(cat => KANBOX_BOARD_CATALOG_IDS.has(String(cat.id || '')))
+                        .map(cat => {
+                            const prepared = prepareKanboxBoardCatalog(cat);
+                            // Browsable catalogs need a defined extra array for Stremio even if
+                            // the only original extras were search (stripped above).
+                            if (prepared.extra === undefined) prepared.extra = [];
+                            return prepared;
+                        });
                 }
-            } catch (e) { 
-                console.error('TV Addon fetch error:', e.message); 
+            } catch (e) {
+                console.error('TV Addon fetch error:', e.message);
             }
         }
 
         const unifiedSearchCatalogs = [
             { id: "esay_mixed_search_movie", type: "movie", name: " חיפוש משולב", extra: [{ name: "search", isRequired: true }] },
             { id: "esay_mixed_search_series", type: "series", name: " חיפוש משולב", extra: [{ name: "search", isRequired: true }] },
-            // "complete" = VIP (Kan-Box/AnimeIL) + anime + tv/channel. Movie/series mixed
-            // searches intentionally exclude those so they stay in this catch-all only.
-            { id: "esay_mixed_search_complete", type: "anime", name: " חיפוש משולב - complete", extra: [{ name: "search", isRequired: true }] }
+            // complete = VIP (Kan-Box/AnimeIL) + anime + tv/channel (excludes movie/series types)
+            { id: "esay_mixed_search_complete", type: "anime", name: " חיפוש משולב - complete", extra: [{ name: "search", isRequired: true }] },
+            // full = all types + VIP, longer soft deadline; excludes ids already returned by the fast 3
+            { id: "esay_mixed_search_full", type: "anime", name: " חיפוש משולב - full", extra: [{ name: "search", isRequired: true }] }
         ];
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.9.0",
+            version: "2.10.0",
             name: `Esay - ${userConfig.name || userKey}`,
             description: "Esay Aggregator with Unified Search & LiveTV Israel",
-            // tt/tmdb: סטנדרט | il_/dbz: ישראלי | mal/kitsu/anilist/anidb: אנימה
-            // tvdb: סדרות | http/https: סטרימינג ישיר (Yuki ודומים)
-            idPrefixes: ["tt", "tmdb", "il_", "mal", "kitsu", "anilist", "anidb", "tvdb", "http", "https", "dbz:"],
+            // tt/tmdb: standard | il_/dbz: Israeli | anime ids | http(s) | Yastream Asian providers
+            idPrefixes: [
+                "tt", "tmdb", "il_", "mal", "kitsu", "anilist", "anidb", "tvdb",
+                "http", "https", "dbz:",
+                ...YASTREAM_MANIFEST_PREFIXES
+            ],
             resources: [
                 "stream",
                 "catalog",
@@ -97,14 +99,17 @@ export default async function handler(req, res) {
                 {
                     name: "subtitles",
                     types: ["movie", "series", "anime"],
-                    idPrefixes: ["tt", "tmdb:", "kitsu:", "mal:", "anilist:", "anidb:", "tvdb", "http", "https", "dbz:"]
+                    idPrefixes: [
+                        "tt", "tmdb:", "kitsu:", "mal:", "anilist:", "anidb:", "tvdb",
+                        "http", "https", "dbz:",
+                        ...YASTREAM_MANIFEST_PREFIXES
+                    ]
                 }
             ],
             types: ["movie", "series", "anime", "tv", "channel"],
             catalogs: [
-                ...(firstKanboxCatalog ? [firstKanboxCatalog] : []), // ה-First ממוקם ראשון לחלוטין
                 ...unifiedSearchCatalogs,
-                ...restKanboxCatalogs
+                ...kanboxBoardCatalogs
             ]
         });
     } catch (error) {
