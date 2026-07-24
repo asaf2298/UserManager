@@ -65,6 +65,11 @@ async function getCachedManifest(baseUrl, headers) {
     }
 }
 
+function isVipSearchHost(url) {
+    const u = (url || '').toLowerCase();
+    return u.includes('kan-box-addon.vercel.app') || u.includes('animeil');
+}
+
 // Returns [{ id, type, baseUrl }, ...] — baseUrl is needed so the caller
 // knows which host to send the actual catalog/search request to.
 async function getSearchCatalogs(baseUrl, type, headers, excludeTypes = null) {
@@ -75,14 +80,14 @@ async function getSearchCatalogs(baseUrl, type, headers, excludeTypes = null) {
         let catalogs;
         if (excludeTypes) {
             // "complete" mode: all searchable types EXCEPT the excluded ones
+            // (anime / tv / channel / … — VIP + anime live here)
             catalogs = manifest.catalogs?.filter(c =>
                 !excludeTypes.includes(c.type) && c.extra?.some(e => e.name === 'search')
             );
         } else {
-            // טריק האנימה: אם חיפשו סדרה, נמשוך גם קטלוגים של אנימה
-            const targetTypes = type === 'series' ? ['series', 'anime'] : [type];
+            // Movie/series mixed search: exact type only (no anime/tv/channel bleed)
             catalogs = manifest.catalogs?.filter(c =>
-                targetTypes.includes(c.type) && c.extra?.some(e => e.name === 'search')
+                c.type === type && c.extra?.some(e => e.name === 'search')
             );
         }
 
@@ -95,14 +100,19 @@ async function getSearchCatalogs(baseUrl, type, headers, excludeTypes = null) {
 // Collects search-capable catalogs from every addon that supports catalog search
 // (TV addon + all ADDON_URLS), excluding the user's catalogBase (aiometadata) since
 // it manages its own search entries in our manifest.
-async function getAllSearchCatalogs(tvAddonUrl, addonUrls, catalogBaseUrl, reqType, proxyHeaders, excludeTypes = null) {
+// includeVip: when false (movie/series חיפוש משולב), skip TV_ADDON / AnimeIL hosts.
+async function getAllSearchCatalogs(tvAddonUrl, addonUrls, catalogBaseUrl, reqType, proxyHeaders, excludeTypes = null, includeVip = true) {
     // Every URL except catalogBase is a candidate; normalise them first
     const cleanCatalogBase = catalogBaseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
     const sources = [
-        ...(tvAddonUrl ? [tvAddonUrl] : []),
+        ...(includeVip && tvAddonUrl ? [tvAddonUrl] : []),
         ...addonUrls
             .map(u => u.replace(/\/manifest\.json$/i, '').replace(/\/$/, ''))
-            .filter(u => u && u !== cleanCatalogBase && u !== tvAddonUrl)
+            .filter(u => {
+                if (!u || u === cleanCatalogBase || u === tvAddonUrl) return false;
+                if (!includeVip && isVipSearchHost(u)) return false;
+                return true;
+            })
     ];
 
     const perSource = await Promise.all(
@@ -154,13 +164,14 @@ export default async function handler(req, res) {
             // We intentionally skip catalogBaseUrl (aiometadata) — it manages its own
             // search entries in our manifest, so including it here would double-send.
             //
-            // "חיפוש משולב - complete" queries for all types EXCEPT movie and series
-            // (those are already covered by the two standard unified searches).
+            // "חיפוש משולב - complete" = VIP + anime + tv/channel (everything except movie/series).
+            // Movie/series חיפוש משולב deliberately exclude VIP hosts and non-matching types.
             const isComplete = cleanCatalogId === 'esay_mixed_search_complete';
             const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
             const allSearchCatalogs = await getAllSearchCatalogs(
                 tvAddonUrl, addonUrls, catalogBaseUrl, reqType, proxyHeaders,
-                isComplete ? ['movie', 'series'] : null
+                isComplete ? ['movie', 'series'] : null,
+                isComplete // includeVip only for complete
             );
             console.log(`[ESAY SEARCH] 🔍 ${cleanCatalogId} | ${allSearchCatalogs.length} search catalogs from ${new Set(allSearchCatalogs.map(c => c.baseUrl)).size} addons`);
 

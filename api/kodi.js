@@ -25,6 +25,7 @@ export default async function handler(req, res) {
       timeoutMs: 9500,
       maxSizeGB: Infinity,
       minSeedersUncached: 1,
+      maxResults: 100,
       addons: (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean),
       clientUA: 'Kodi-ThinClient/1.0',
       clientIp: req.headers['x-forwarded-for']?.split(',')[0] || ''
