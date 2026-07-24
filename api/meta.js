@@ -31,7 +31,7 @@ export default async function handler(req, res) {
         const urlParts = req.url.split('?')[0].split('/');
         const metaIdx = urlParts.indexOf('meta');
         
-        // שינוי קטן כדי לאפשר שליפת קונפיגורציה של AIO מהנתיב (משיכת ה-userKey)
+        // userKey is the path segment before /meta/ (kept for logging)
         if (metaIdx < 1 || metaIdx + 2 >= urlParts.length) return res.status(404).json({ meta: null });
 
         const userKey = urlParts[metaIdx - 1]; 
@@ -42,11 +42,6 @@ export default async function handler(req, res) {
         if (rawIdWithExt.includes('%')) rawIdWithExt = decodeURIComponent(rawIdWithExt);
         const idWithExt = rawIdWithExt;
         const id = idWithExt.replace('.json', '');
-
-        // טעינת משתני סביבה כדי להכיר את שרת ה-AIO והשרת הישראלי
-        const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
-        const userConfig = configs[userKey] || {};
-        const catalogBaseUrl = (userConfig.catalogBase || '').replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
 
         const tvAddonUrl = process.env.TV_ADDON_URL;
         const cleanTvUrl = tvAddonUrl ? tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '') : '';
@@ -64,21 +59,20 @@ export default async function handler(req, res) {
             'X-Forwarded-For': clientIp
         };
 
-        // 🟢 ניתוב חכם: מה ששלנו הולך לישראלי, הכל השאר (AIO) הולך ל-catalogBaseUrl
+        // Israeli / Live TV → Kan-Box; everything else → public Cinemeta (tt ids)
         let targetUrl = '';
-        let branch = 'aio';
+        let branch = 'cinemeta';
         if (id.startsWith('dbz:') || id.startsWith('il_') || type === 'tv' || type === 'channel') {
             if (!cleanTvUrl) return res.status(404).json({ meta: null });
             targetUrl = `${cleanTvUrl}/meta/${forwardType}/${idWithExt}`;
             branch = 'tv';
+        } else if (id.startsWith('tt')) {
+            targetUrl = `https://v3-cinemeta.strem.io/meta/${type}/${idWithExt}`;
+            branch = 'cinemeta';
         } else {
-            if (!catalogBaseUrl) {
-                // No AIO configured — fall through to Cinemeta for tt ids
-                targetUrl = '';
-                branch = 'none';
-            } else {
-                targetUrl = `${catalogBaseUrl}/meta/${type}/${idWithExt}`;
-            }
+            // No external metadata provider for anime/kitsu/mal/etc. ids
+            targetUrl = '';
+            branch = 'none';
         }
 
         // #region agent log
@@ -90,21 +84,6 @@ export default async function handler(req, res) {
         // #endregion
 
         let result = targetUrl ? await fetchMetaJson(targetUrl, headers, 5000) : { ok: false, status: 0, data: null };
-
-        // H3: If AIO/catalogBase fails for IMDb ids, fall back to public Cinemeta so Board posters still load
-        if (!result.ok && id.startsWith('tt') && branch !== 'tv') {
-            const cineUrl = `https://v3-cinemeta.strem.io/meta/${type}/${idWithExt}`;
-            console.log(`[ESAY META] 🔄 AIO miss for ${id} — falling back to Cinemeta`);
-            result = await fetchMetaJson(cineUrl, headers, 4000);
-            // #region agent log
-            debugLog('H3', 'api/meta.js:cinemetaFallback', 'cinemeta fallback', {
-                id: id.slice(0, 40),
-                ok: result.ok,
-                status: result.status,
-                name: result.data?.meta?.name || null
-            });
-            // #endregion
-        }
 
         if (result.ok && result.data?.meta) {
             const data = result.data;

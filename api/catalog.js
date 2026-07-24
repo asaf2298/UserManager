@@ -98,18 +98,15 @@ async function getSearchCatalogs(baseUrl, type, headers, excludeTypes = null) {
 }
 
 // Collects search-capable catalogs from every addon that supports catalog search
-// (TV addon + all ADDON_URLS), excluding the user's catalogBase (aiometadata) since
-// it manages its own search entries in our manifest.
+// (TV addon + all ADDON_URLS).
 // includeVip: when false (movie/series חיפוש משולב), skip TV_ADDON / AnimeIL hosts.
-async function getAllSearchCatalogs(tvAddonUrl, addonUrls, catalogBaseUrl, reqType, proxyHeaders, excludeTypes = null, includeVip = true) {
-    // Every URL except catalogBase is a candidate; normalise them first
-    const cleanCatalogBase = catalogBaseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
+async function getAllSearchCatalogs(tvAddonUrl, addonUrls, reqType, proxyHeaders, excludeTypes = null, includeVip = true) {
     const sources = [
         ...(includeVip && tvAddonUrl ? [tvAddonUrl] : []),
         ...addonUrls
             .map(u => u.replace(/\/manifest\.json$/i, '').replace(/\/$/, ''))
             .filter(u => {
-                if (!u || u === cleanCatalogBase || u === tvAddonUrl) return false;
+                if (!u || u === tvAddonUrl) return false;
                 if (!includeVip && isVipSearchHost(u)) return false;
                 return true;
             })
@@ -135,7 +132,7 @@ export default async function handler(req, res) {
     const forwardedIps = req.headers['x-forwarded-for'] || '';
     const clientIp = forwardedIps ? forwardedIps.split(',')[0].trim() : (req.socket?.remoteAddress || '');
     
-    // Same header set as manifest/meta — AIOMETADATA often requires X-Forwarded-For
+    // Same header set as manifest/meta — some upstreams require X-Forwarded-For
     const proxyHeaders = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp };
 
     try {
@@ -149,27 +146,22 @@ export default async function handler(req, res) {
         const cleanCatalogId = rawCatalogId.replace('.json', '');
         const extraPart = urlParts.slice(catIdx + 3).join('/'); 
         
-        const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
-        const userConfig = configs[userKey] || {};
         const tvAddonUrl = (process.env.TV_ADDON_URL || '').replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-        const catalogBaseUrl = (userConfig.catalogBase || '').replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
 
         // ==========================================
         // 1. טיפול בחיפוש מעורב (Mixed Search)
         // ==========================================
         if (cleanCatalogId.startsWith('esay_mixed_search') && extraPart.includes('search=')) {
             // Fan-out to every addon that exposes catalog/search support:
-            //   • TV addon (Kan-Box/Israeli)
+            //   • TV addon (Kan-Box/Israeli) — complete search only
             //   • All ADDON_URLS (e.g. YukiStreams anime catalogs, etc.)
-            // We intentionally skip catalogBaseUrl (aiometadata) — it manages its own
-            // search entries in our manifest, so including it here would double-send.
             //
             // "חיפוש משולב - complete" = VIP + anime + tv/channel (everything except movie/series).
             // Movie/series חיפוש משולב deliberately exclude VIP hosts and non-matching types.
             const isComplete = cleanCatalogId === 'esay_mixed_search_complete';
             const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
             const allSearchCatalogs = await getAllSearchCatalogs(
-                tvAddonUrl, addonUrls, catalogBaseUrl, reqType, proxyHeaders,
+                tvAddonUrl, addonUrls, reqType, proxyHeaders,
                 isComplete ? ['movie', 'series'] : null,
                 isComplete // includeVip only for complete
             );
@@ -205,7 +197,7 @@ export default async function handler(req, res) {
         }
 
         // ==========================================
-        // 2. ניתוב קטלוגים רגיל (הגנה על דרגון בול)
+        // 2. ניתוב קטלוגים רגיל (Kan-Box / Live TV only)
         // ==========================================
         let targetUrl = '';
         let requestHeaders = proxyHeaders;
@@ -218,8 +210,8 @@ export default async function handler(req, res) {
             targetUrl = `${tvAddonUrl}/catalog/${reqType}/${rawCatalogId}${extraPart ? '/' + extraPart : ''}`;
             requestHeaders = proxyHeaders;
         } else {
-            if (!catalogBaseUrl) return res.status(404).json({ metas: [] });
-            targetUrl = `${catalogBaseUrl}/catalog/${reqType}/${rawCatalogId}${extraPart ? '/' + extraPart : ''}`;
+            // No external metadata catalog provider — only Kan-Box + mixed search are advertised
+            return res.status(200).json({ metas: [] });
         }
 
         // #region agent log
@@ -227,7 +219,7 @@ export default async function handler(req, res) {
             userKey,
             cleanCatalogId,
             reqType,
-            branch: ((reqType === 'tv' || reqType === 'channel') || isDbzCatalog || tvCatalogIds.includes(cleanCatalogId)) ? 'tv' : 'aio',
+            branch: 'tv',
             targetHost: targetUrl.split('/').slice(0, 3).join('/'),
             hasXff: !!requestHeaders['X-Forwarded-For']
         });

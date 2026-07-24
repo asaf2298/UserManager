@@ -44,7 +44,7 @@ True HDR/DV/HLG tags (`HDR`, `HDR10`, `HDR10+`, `HLG`, `Dolby Vision`, `DoVi`, `
 * All subtitle URLs are routed through `/api/sub-proxy`, which re-emits bodies as **UTF-8** (strips Windows-1255 / ISO-8859-8 legacy encodings).
 
 ### Israeli catalogs (Kan-Box)
-Live TV catalog is promoted to the top of the manifest; remaining Kan-Box catalogs are prefixed with `IL - ` when needed. Personalized AIOMETADATA catalogs are merged per user `catalogBase`.
+Live TV catalog is promoted to the top of the manifest; remaining Kan-Box catalogs are prefixed with `IL - ` when needed. Board catalogs come from Kan-Box + `חיפוש משולב` only (no external AIOMETADATA board).
 
 ---
 
@@ -56,8 +56,7 @@ Live TV catalog is promoted to the top of the manifest; remaining Kan-Box catalo
 | `SUBTITLE_URLS` | Subtitle addon bases, separated by `\|\|\|` | `https://opensubtitles-v3.strem.io\|\|\|https://sub.scary.network` |
 | `TV_ADDON_URL` | Israeli live / Kan-Box addon base | `https://kan-box-addon.vercel.app` |
 | `TMDB_API_KEY` | TMDB v3 API key (titles, year, runtime) | `KEY...` |
-| `USER_CONFIGS` | JSON map of user keys → profile / catalog | *(see below)* |
-| `AIOMETADATA_URL` | Fallback metadata base for Kodi catalog only | `https://aiometadata...` |
+| `USER_CONFIGS` | JSON map of user keys → profile / name | *(see below)* |
 
 > Do **not** append `/manifest.json` to addon URLs in env vars.
 
@@ -67,12 +66,11 @@ Live TV catalog is promoted to the top of the manifest; remaining Kan-Box catalo
 {
   "my_secret_master_key": {
     "profile": "everything",
-    "catalogBase": "https://aiometadata.elfhosted.com/stremio/YOUR_KEY",
     "name": "Master"
   },
   "friend_key_1": {
     "profile": "friends_heavy",
-    "catalogBase": "https://aiometadata.elfhosted.com/stremio/FRIEND_KEY"
+    "name": "Friend"
   },
   "kids_room_key": {
     "profile": "family"
@@ -80,7 +78,7 @@ Live TV catalog is promoted to the top of the manifest; remaining Kan-Box catalo
 }
 ```
 
-User keys are taken from the **URL path** (`/<USER_KEY>/manifest.json`, `/<USER_KEY>/stream/...`). Kodi catalog uses query `userKey`.
+User keys are taken from the **URL path** (`/<USER_KEY>/manifest.json`, `/<USER_KEY>/stream/...`). Kodi catalog uses query `userKey` only for live channels / optional labeling; VOD catalogs use public Cinemeta.
 
 ---
 
