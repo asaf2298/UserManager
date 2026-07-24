@@ -96,8 +96,8 @@ export default async function handler(req, res) {
         const unifiedSearchCatalogs = [
             { id: "esay_mixed_search_movie", type: "movie", name: " חיפוש משולב", extra: [{ name: "search", isRequired: true }] },
             { id: "esay_mixed_search_series", type: "series", name: " חיפוש משולב", extra: [{ name: "search", isRequired: true }] },
-            // "complete" covers non-movie, non-series types from Kan-Box (anime, channel, tv)
-            // and serves as a catch-all so users can search anything not in the two standard catalogs.
+            // "complete" = VIP (Kan-Box/AnimeIL) + anime + tv/channel. Movie/series mixed
+            // searches intentionally exclude those so they stay in this catch-all only.
             { id: "esay_mixed_search_complete", type: "anime", name: " חיפוש משולב - complete", extra: [{ name: "search", isRequired: true }] }
         ];
 
