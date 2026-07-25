@@ -22,7 +22,8 @@ ID_RESOLVE_CACHE_TTL_MS=300000       # in-memory resolve cache (5 min)
 ```
 
 Fribb ingest (offline): `node --env-file=.env.local scripts/ingest-fribb.mjs`  
-AniBridge episode ingest: `node --env-file=.env.local scripts/ingest-anibridge.mjs`
+AniBridge episode ingest: `node --env-file=.env.local scripts/ingest-anibridge.mjs` (compact ranges, ~52k rows)  
+Batch generator (no service role): `node scripts/generate-anibridge-batches.mjs` → load via `personal_ingest_episode_rows` RPC
 
 ### Lint / test / build
 There are **none**. `package.json` has no `scripts`, and the repo contains no test files, linter config, or build config. Do not invent these unless asked.
