@@ -44,7 +44,7 @@ True HDR/DV/HLG tags (`HDR`, `HDR10`, `HDR10+`, `HLG`, `Dolby Vision`, `DoVi`, `
 * All subtitle URLs are routed through `/api/sub-proxy`, which re-emits bodies as **UTF-8** (strips Windows-1255 / ISO-8859-8 legacy encodings).
 
 ### Israeli catalogs (Kan-Box)
-Board/Discovery include **all** Kan-Box catalogs: **ערוצים חיים** first, then `חיפוש משולב*`, then the remaining IL VOD/podcast/DBZ rows.
+Board/Discovery include **all** Kan-Box catalogs: **ערוצים חיים** first, then `חיפוש משולב*`, then the remaining IL VOD/podcast/DBZ rows. Dragon Ball catalogs stay in Discover but are Board-hidden via a required `genre` extra.
 
 ### Unified search
 * `חיפוש משולב` (movie / series) — ~3s soft deadline; no VIP hosts (Kan-Box / AnimeIL).
