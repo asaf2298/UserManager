@@ -22,13 +22,24 @@ const PROFILES = {
 };
 
 const MAX_VIP_SLOTS = 3;
+const MAX_HEBREW_RESERVE = 2;
 const MIN_PER_RESOLUTION = 2;
 
 function applyQuotasAndSlice(streams, profileConfig, maxResults) {
   const vipStreams = [];
+  const hebrewMatches = [];
   const standardStreams = [];
   for (const stream of streams) {
-    (isVIPSource(stream) ? vipStreams : standardStreams).push(stream);
+    if (isVIPSource(stream)) {
+      vipStreams.push(stream);
+      continue;
+    }
+    // Engine marks confirmed Hebrew+same-title hits — always leave room for them
+    if (stream._hebrewMatch) {
+      hebrewMatches.push(stream);
+      continue;
+    }
+    standardStreams.push(stream);
   }
 
   const buckets = { '4k_c': [], '4k_u': [], '1080p_c': [], '1080p_u': [], '720p_c': [], '720p_u': [], 'sd_c': [], 'sd_u': [] };
@@ -96,11 +107,20 @@ function applyQuotasAndSlice(streams, profileConfig, maxResults) {
     if (buckets[key].length > 0) quotaOverflow.push(...buckets[key]);
   }
 
-  // VIP always first in line, capped
+  // VIP always first in line, capped; then confirmed Hebrew same-title matches
   const cappedVipStreams = vipStreams.slice(0, MAX_VIP_SLOTS);
-  let finalCandidates = [...cappedVipStreams, ...standardResult];
+  hebrewMatches.sort(masterSortFunc);
+  const cappedHebrew = hebrewMatches.slice(0, MAX_HEBREW_RESERVE);
+  const hebrewOverflow = hebrewMatches.slice(MAX_HEBREW_RESERVE);
+
+  let finalCandidates = [...cappedVipStreams, ...cappedHebrew, ...standardResult];
   let missingSlots = maxResults - finalCandidates.length;
 
+  if (missingSlots > 0 && hebrewOverflow.length > 0) {
+    const taken = hebrewOverflow.slice(0, missingSlots);
+    finalCandidates.push(...taken);
+    missingSlots -= taken.length;
+  }
   if (missingSlots > 0 && quotaOverflow.length > 0) {
     const taken = quotaOverflow.slice(0, missingSlots);
     finalCandidates.push(...taken);
@@ -113,7 +133,7 @@ function applyQuotasAndSlice(streams, profileConfig, maxResults) {
   // Big profiles: 3 each; light/family: 1 each
   const resCount = isBigProfile ? 3 : 1;
 
-  const nonVipStreams = finalCandidates.filter(s => !isVIPSource(s));
+  const nonVipStreams = finalCandidates.filter(s => !isVIPSource(s) && !s._hebrewMatch);
 
   const poolDirectWeb = [];
   const poolUncached4K = [];
@@ -143,6 +163,7 @@ function applyQuotasAndSlice(streams, profileConfig, maxResults) {
 
   console.log(
     `[ESAY QUOTA] profile=${profileConfig} vip=${cappedVipStreams.length}/${MAX_VIP_SLOTS}` +
+    ` hebrew=${cappedHebrew.length}/${MAX_HEBREW_RESERVE}` +
     ` reserve U4K=${reservedU4K.length} U1080=${reservedU1080p.length} web=${reservedDirectWeb.length}`
   );
 
@@ -150,14 +171,17 @@ function applyQuotasAndSlice(streams, profileConfig, maxResults) {
   restToFill.sort(masterSortFunc);
 
   const currentReservedCount = reservedU4K.length + reservedU1080p.length + reservedDirectWeb.length;
-  const remainingSlots = Math.max(0, maxResults - cappedVipStreams.length - currentReservedCount);
+  const remainingSlots = Math.max(
+    0,
+    maxResults - cappedVipStreams.length - cappedHebrew.length - currentReservedCount
+  );
   const standardFill = restToFill.slice(0, remainingSlots);
 
   const combinedStandardAndUncached = [...standardFill, ...reservedU4K, ...reservedU1080p];
   combinedStandardAndUncached.sort(masterSortFunc);
 
-  // VIP always first
-  return [...cappedVipStreams, ...combinedStandardAndUncached, ...reservedDirectWeb];
+  // VIP first, then confirmed Hebrew same-title, then quality fill
+  return [...cappedVipStreams, ...cappedHebrew, ...combinedStandardAndUncached, ...reservedDirectWeb];
 }
 
 // Maps our internal resolution weight to the short label the user sees next to the provider name
@@ -219,7 +243,8 @@ function formatForStremio(streams) {
       '_sourceBaseUrl', '_text', '_sizeGB', '_effectiveSizeGB', '_isEpisodeQuery', '_isCached', '_isUsenet',
       '_isVip', '_isNotice', '_seeders', '_resWeight', '_qualityWeight',
       '_visualWeight', '_audioWeight', '_langWeight', '_weightTier',
-      '_releaseYear', '_fakeHdrPenalized', '_upscalePenalized', '_isSeasonPack'
+      '_releaseYear', '_fakeHdrPenalized', '_upscalePenalized', '_isSeasonPack',
+      '_hebrewMatch', '_titleMatched'
     ];
     keysToDelete.forEach(k => delete stream[k]);
     return stream;
