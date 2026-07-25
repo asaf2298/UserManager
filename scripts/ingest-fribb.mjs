@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 /**
- * Ingest Fribb anime-list-full.json into personal_titles (Phase 1).
+ * Ingest Fribb anime-list-full.json into personal_titles (Phase 1 + Phase 4 pool).
  *
  * Usage:
- *   node --env-file=.env.local scripts/ingest-fribb.mjs
+ *   node --env-file=.env.local scripts/ingest-fribb.mjs [--imdb-only] [--mal-only]
+ *
+ * Default: ingest both imdb-keyed rows and MAL-only rows (~28k total).
  *
  * Requires:
  *   SUPABASE_URL
- *   SUPABASE_SERVICE_ROLE_KEY
+ *   SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY (RPC personal_ingest_title_rows)
  */
 import fetch from 'node-fetch';
 
@@ -20,6 +22,10 @@ function requireEnv(name) {
   const v = process.env[name];
   if (!v) throw new Error(`Missing env ${name}`);
   return v;
+}
+
+function supabaseKey() {
+  return process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || null;
 }
 
 function firstImdbId(entry) {
@@ -50,14 +56,11 @@ function mapTmdbId(entry) {
   return firstScalar(tmdb.tv ?? tmdb.movie ?? null);
 }
 
-function rowFromFribb(entry) {
-  const imdbId = firstImdbId(entry);
-  if (!imdbId) return null;
-
-  const mal = entry.mal_id ?? null;
-  const kitsu = entry.kitsu_id ?? null;
-  const anilist = entry.anilist_id ?? null;
-  const anidb = entry.anidb_id ?? null;
+function baseRowFromFribb(entry) {
+  const mal = firstScalar(entry.mal_id);
+  const kitsu = firstScalar(entry.kitsu_id);
+  const anilist = firstScalar(entry.anilist_id);
+  const anidb = firstScalar(entry.anidb_id);
   const isAnime = Boolean(mal || kitsu || anilist || anidb);
 
   const hints = {};
@@ -66,13 +69,12 @@ function rowFromFribb(entry) {
   }
 
   return {
-    imdb_id: imdbId,
     tmdb_id: mapTmdbId(entry),
     tvdb_id: firstScalar(entry.tvdb_id),
-    mal_id: firstScalar(entry.mal_id),
-    kitsu_id: firstScalar(entry.kitsu_id),
-    anilist_id: firstScalar(entry.anilist_id),
-    anidb_id: firstScalar(entry.anidb_id),
+    mal_id: mal,
+    kitsu_id: kitsu,
+    anilist_id: anilist,
+    anidb_id: anidb,
     media_type: mapMediaType(entry),
     category: isAnime ? 'anime' : 'unknown',
     primary_title: null,
@@ -81,6 +83,28 @@ function rowFromFribb(entry) {
     sources: [SOURCE],
     updated_at: new Date().toISOString(),
   };
+}
+
+function rowFromFribbImdb(entry) {
+  const imdbId = firstImdbId(entry);
+  if (!imdbId) return null;
+  return { imdb_id: imdbId, ...baseRowFromFribb(entry) };
+}
+
+function rowFromFribbMalOnly(entry) {
+  if (firstImdbId(entry)) return null;
+  const mal = firstScalar(entry.mal_id);
+  if (!mal) return null;
+  return { imdb_id: null, ...baseRowFromFribb(entry) };
+}
+
+function mergeTitleRow(existing, row) {
+  for (const field of ['tmdb_id', 'tvdb_id', 'mal_id', 'kitsu_id', 'anilist_id', 'anidb_id']) {
+    if (!existing[field] && row[field]) existing[field] = row[field];
+  }
+  if (!existing.sources.includes(SOURCE)) existing.sources.push(SOURCE);
+  if (existing.category === 'unknown' && row.category === 'anime') existing.category = 'anime';
+  existing.hints = { ...existing.hints, ...row.hints };
 }
 
 async function downloadFribb() {
@@ -92,7 +116,25 @@ async function downloadFribb() {
   return res.json();
 }
 
-async function upsertBatch(supabaseUrl, key, rows) {
+async function ingestBatchRpc(supabaseUrl, key, rows) {
+  const res = await fetch(`${supabaseUrl}/rest/v1/rpc/personal_ingest_title_rows`, {
+    method: 'POST',
+    headers: {
+      apikey: key,
+      Authorization: `Bearer ${key}`,
+      'Content-Type': 'application/json',
+      Prefer: 'return=representation',
+    },
+    body: JSON.stringify({ rows }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`RPC personal_ingest_title_rows failed ${res.status}: ${body.slice(0, 500)}`);
+  }
+  return res.json();
+}
+
+async function upsertBatchRest(supabaseUrl, key, rows) {
   const res = await fetch(`${supabaseUrl}/rest/v1/personal_titles?on_conflict=imdb_id`, {
     method: 'POST',
     headers: {
@@ -101,12 +143,20 @@ async function upsertBatch(supabaseUrl, key, rows) {
       'Content-Type': 'application/json',
       Prefer: 'resolution=merge-duplicates,return=minimal',
     },
-    body: JSON.stringify(rows),
+    body: JSON.stringify(rows.filter(r => r.imdb_id)),
   });
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`Upsert failed ${res.status}: ${body.slice(0, 500)}`);
   }
+}
+
+async function ingestBatch(supabaseUrl, key, rows, useRpc) {
+  if (useRpc) {
+    return ingestBatchRpc(supabaseUrl, key, rows);
+  }
+  await upsertBatchRest(supabaseUrl, key, rows);
+  return rows.length;
 }
 
 async function recordIngestMeta(supabaseUrl, key, rowCount, etag) {
@@ -134,42 +184,60 @@ async function recordIngestMeta(supabaseUrl, key, rowCount, etag) {
 }
 
 async function main() {
+  const imdbOnly = process.argv.includes('--imdb-only');
+  const malOnly = process.argv.includes('--mal-only');
+  const includeImdb = malOnly ? false : true;
+  const includeMal = imdbOnly ? false : true;
+
   const supabaseUrl = requireEnv('SUPABASE_URL').replace(/\/$/, '');
-  const key = requireEnv('SUPABASE_SERVICE_ROLE_KEY');
+  const key = supabaseKey();
+  if (!key) throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY');
 
   const list = await downloadFribb();
   if (!Array.isArray(list)) throw new Error('Fribb JSON is not an array');
 
   const byImdb = new Map();
-  let skippedNoImdb = 0;
+  const byMalOnly = new Map();
+  let skippedNoIds = 0;
+
   for (const entry of list) {
-    const row = rowFromFribb(entry);
-    if (!row) {
-      skippedNoImdb++;
-      continue;
+    if (includeImdb) {
+      const imdbRow = rowFromFribbImdb(entry);
+      if (imdbRow) {
+        const existing = byImdb.get(imdbRow.imdb_id);
+        if (!existing) byImdb.set(imdbRow.imdb_id, imdbRow);
+        else mergeTitleRow(existing, imdbRow);
+      }
     }
-    const existing = byImdb.get(row.imdb_id);
-    if (!existing) {
-      byImdb.set(row.imdb_id, row);
-      continue;
+
+    if (includeMal) {
+      const malRow = rowFromFribbMalOnly(entry);
+      if (malRow?.mal_id) {
+        const existing = byMalOnly.get(malRow.mal_id);
+        if (!existing) byMalOnly.set(malRow.mal_id, malRow);
+        else mergeTitleRow(existing, malRow);
+      }
     }
-    // Merge sibling Fribb cour rows onto one imdb show key (keep richest ids).
-    for (const field of ['tmdb_id', 'tvdb_id', 'mal_id', 'kitsu_id', 'anilist_id', 'anidb_id']) {
-      if (!existing[field] && row[field]) existing[field] = row[field];
-    }
-    if (!existing.sources.includes(SOURCE)) existing.sources.push(SOURCE);
-    if (existing.category === 'unknown' && row.category === 'anime') existing.category = 'anime';
+
+    if (!firstImdbId(entry) && !firstScalar(entry.mal_id)) skippedNoIds++;
   }
 
-  const rows = [...byImdb.values()];
+  const rows = [...byImdb.values(), ...byMalOnly.values()];
+  const useRpc = includeMal || Boolean(process.env.SUPABASE_ANON_KEY);
+
   console.log(
-    `[ingest-fribb] ${list.length} fribb entries → ${rows.length} imdb rows (skipped ${skippedNoImdb} without imdb)`
+    `[ingest-fribb] ${list.length} fribb entries → ${byImdb.size} imdb + ${byMalOnly.size} mal-only` +
+      ` = ${rows.length} rows (skipped ${skippedNoIds} without ids)` +
+      ` | rpc=${useRpc}`
   );
 
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE);
-    await upsertBatch(supabaseUrl, key, batch);
-    console.log(`[ingest-fribb] upserted ${Math.min(i + BATCH_SIZE, rows.length)} / ${rows.length}`);
+    const result = await ingestBatch(supabaseUrl, key, batch, useRpc);
+    console.log(
+      `[ingest-fribb] upserted ${Math.min(i + BATCH_SIZE, rows.length)} / ${rows.length}` +
+        (useRpc ? ` (rpc processed ${result})` : '')
+    );
   }
 
   await recordIngestMeta(supabaseUrl, key, rows.length, null);
