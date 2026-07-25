@@ -45,15 +45,13 @@ function prepareKanboxCatalog(cat, { isLive = false } = {}) {
         extra: nonSearchExtra.length > 0 ? nonSearchExtra : []
     };
 
-    // Board-hide: require genre so Board skips it; Discover still lists it
+    // Board-hide: require genre so Board skips it; Discover still lists it.
+    // Use a single "הכל" option for both DBZ movies and series (series upstream
+    // otherwise exposes franchise genres that clutter Discover).
     if (BOARD_HIDDEN_KANBOX_IDS.has(String(cat.id || ''))) {
-        const existingGenre = prepared.extra.find(e => e.name === 'genre');
-        const genre = existingGenre
-            ? { ...existingGenre, isRequired: true }
-            : { name: 'genre', isRequired: true, options: ['הכל'] };
         prepared.extra = [
             ...prepared.extra.filter(e => e.name !== 'genre'),
-            genre
+            { name: 'genre', isRequired: true, options: ['הכל'] }
         ];
     }
 
@@ -114,7 +112,7 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.10.4",
+            version: "2.10.5",
             name: `Personal - ${userConfig.name || userKey}`,
             description: "Personal Aggregator with Unified Search & LiveTV Israel",
             idPrefixes: [
