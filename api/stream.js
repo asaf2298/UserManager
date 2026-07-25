@@ -5,6 +5,12 @@ import {
   masterSortFunc, REGEX_BRACKETS, REGEX_PARENS, REGEX_DOWNLOAD, isNoticeStream
 } from '../lib/utils.js';
 import { findYastreamBaseUrl, isYastreamProviderId } from '../lib/yastream.js';
+import {
+  isIdResolveEnabled,
+  isIdResolveShadow,
+  resolveContentContext,
+  logShadowResolve,
+} from '../lib/idResolve.js';
 
 const PROFILES = {
   // Capable profiles push closer to Vercel's ~10s ceiling for richer fan-out
@@ -363,6 +369,15 @@ export default async function handler(req, res) {
     }
 
     if (addons.length === 0) return res.status(200).json({ streams: [] });
+
+    // Phase 1 shadow: resolve mapping context for logging only (no query changes).
+    if (isIdResolveEnabled()) {
+      resolveContentContext(type, idWithExt)
+        .then((ctx) => {
+          if (ctx && isIdResolveShadow()) logShadowResolve(ctx);
+        })
+        .catch(() => {});
+    }
 
     const engineContext = {
       timeoutMs: profile.timeoutMs,
