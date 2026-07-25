@@ -4,7 +4,7 @@ Vecret (**Personal**, formerly Esay) is a serverless proxy and aggregator for **
 
 Stremio install name: **`Personal - {name}`** (from `USER_CONFIGS`).
 
-Current manifest version: **2.10.5**.
+Current manifest version: **2.11.0**.
 
 ---
 
@@ -28,6 +28,9 @@ Current manifest version: **2.10.5**.
   * `everything` / `friends_heavy`: up to **3** Uncached 4K, **3** Uncached 1080p, **3** Direct Web
   * `friends_light` / `family`: **1** of each
 * Episode queries drop oversized **season-pack** rows when the non-pack list already fills `maxResults`.
+* **Soft title filter:** drops clear wrong-show matches (e.g. Utena on a Re:Zero request); borderline rows can be re-admitted only when the list is thin.
+* Up to **2** confirmed Hebrew same-title slots are reserved in the quota (HEB tags or Hebrew-letter release names matched via `meta.he`).
+* With `ID_RESOLVE_MAX_ALIAS_SEARCHES=2`, a 2nd anime synonym search runs only after the 5.5s burst when results are still thin.
 
 ### Dynamic Hebrew stream tags
 * `זמין לצפייה` — Cached / Debrid-ready
@@ -49,7 +52,8 @@ True HDR/DV/HLG tags still boost visual score. Self-declared AI/upscales and con
 
 ### Smart subtitles
 * Dynamic race: at **6s**, cut early if ≥3 Hebrew subs; otherwise extend to **9s**.
-* Language allowlist (he / en / ru); if none match, **any available format** is returned as fallback.
+* Language allowlist (he / en / ru). Unknown langs are dropped — **honest empty beats fake Hebrew**.
+* Provider “Hebrew” tracks are sniffed for real Hebrew script; mislabeled English/etc. are dropped.
 * **Duration matching (±5%):** compares subtitle duration to TMDB/Cinemeta runtime. Matches get a large bonus.
 * Display titles include provider (`Personal Sub`), score (`★N`), and sync/duration hints.
 * All subtitle URLs are routed through `/api/sub-proxy` as **UTF-8**.
