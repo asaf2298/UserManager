@@ -77,6 +77,8 @@ function baseRowFromFribb(entry) {
     anidb_id: anidb,
     media_type: mapMediaType(entry),
     category: isAnime ? 'anime' : 'unknown',
+    // Origin filled by Manami tags (JP/KR/CN); leave empty here so KR/CN are not forced to JP
+    origin_countries: [],
     primary_title: null,
     titles: { synonyms: [] },
     hints,

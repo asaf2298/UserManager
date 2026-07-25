@@ -117,7 +117,7 @@ Cross-provider ID resolution for anime (and later K-drama/soap). **Disabled by d
 | `ID_RESOLVE_ANIME_ADDON_PATTERNS` | Comma-separated host substrings for mal/kitsu fan-out | `torrentio,comet,mediafusion,…` |
 | `ID_RESOLVE_CACHE_TTL_MS` | In-memory resolve cache TTL | `300000` (5 min) |
 
-**Rollout:** enable `ID_RESOLVE_ENABLED` + `ID_RESOLVE_SHADOW` first and inspect logs (shadow is fire-and-forget — does not delay fan-out). Then set `ID_RESOLVE_QUERY=true` for additive anime fan-out; resolve overlaps with meta so base `tt` + text queries still start on the same schedule. Run `scripts/ingest-anibridge.mjs`, verify shadow shows `mappedExtras` for multi-cour titles, then set `ID_RESOLVE_EPISODE=true`. Finally run Fribb + Manami ingest and set `ID_RESOLVE_ALIAS=true` for synonym text search. Episode coords still use Stremio S/E for the primary `tt` query.
+**Rollout:** enable `ID_RESOLVE_ENABLED` + `ID_RESOLVE_SHADOW` first and inspect logs (shadow is fire-and-forget — does not delay fan-out). Then set `ID_RESOLVE_QUERY=true` for additive anime fan-out; resolve overlaps with meta so base `tt` + text queries still start on the same schedule. Run `scripts/ingest-anibridge.mjs`, verify shadow shows `mappedExtras` for multi-cour titles, then set `ID_RESOLVE_EPISODE=true`. Finally run Fribb + Manami ingest and set `ID_RESOLVE_ALIAS=true` for synonym text search (prefers origin-country titles: Japanese / Korean / Chinese). Episode coords still use Stremio S/E for the primary `tt` query.
 
 Fribb ingest (offline): `node --env-file=.env.local scripts/ingest-fribb.mjs` (imdb + MAL-only pool)  
 Manami aliases: `node scripts/generate-manami-batches.mjs` → `node scripts/ingest-manami-aliases.mjs`  
