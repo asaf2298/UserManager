@@ -370,13 +370,14 @@ export default async function handler(req, res) {
 
     if (addons.length === 0) return res.status(200).json({ streams: [] });
 
-    // Phase 1 shadow: resolve mapping context for logging only (no query changes).
+    let idResolveContext = null;
     if (isIdResolveEnabled()) {
-      resolveContentContext(type, idWithExt)
-        .then((ctx) => {
-          if (ctx && isIdResolveShadow()) logShadowResolve(ctx);
-        })
-        .catch(() => {});
+      try {
+        idResolveContext = await resolveContentContext(type, idWithExt);
+        if (idResolveContext && isIdResolveShadow()) logShadowResolve(idResolveContext);
+      } catch {
+        idResolveContext = null;
+      }
     }
 
     const engineContext = {
@@ -387,7 +388,8 @@ export default async function handler(req, res) {
       addons,
       clientUA,
       clientIp,
-      queryHint: decodeURIComponent(req.url || '')
+      queryHint: decodeURIComponent(req.url || ''),
+      idResolveContext,
     };
 
     const allValidStreams = await fetchAndSortStreams(type, idWithExt, engineContext);

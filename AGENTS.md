@@ -13,8 +13,9 @@ SUPABASE_URL=https://gihkgnadwxpopvspeskb.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=…          # ingest scripts; server resolve can use anon instead
 SUPABASE_ANON_KEY=…                    # optional read-only resolver key
 ID_RESOLVE_ENABLED=false             # true to query Supabase on stream
-ID_RESOLVE_SHADOW=true               # log [ID-RESOLVE][SHADOW] only; no query changes
-ID_RESOLVE_TIMEOUT_MS=200
+ID_RESOLVE_SHADOW=true               # log [ID-RESOLVE][SHADOW] plans
+ID_RESOLVE_QUERY=false               # Phase 2: additive mal:/kitsu: fan-out (never replaces tt)
+ID_RESOLVE_TIMEOUT_MS=400
 ```
 
 Fribb ingest (offline): `node --env-file=.env.local scripts/ingest-fribb.mjs`
