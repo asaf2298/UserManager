@@ -15,12 +15,14 @@ SUPABASE_ANON_KEY=…                    # optional read-only resolver key
 ID_RESOLVE_ENABLED=false             # true to query Supabase on stream
 ID_RESOLVE_SHADOW=true               # log [ID-RESOLVE][SHADOW] plans
 ID_RESOLVE_QUERY=false               # Phase 2: additive mal:/kitsu: fan-out (never replaces tt)
+ID_RESOLVE_EPISODE=false             # Phase 3: apply AniBridge episode remap to extras
 ID_RESOLVE_TIMEOUT_MS=400
 ID_RESOLVE_MAX_EXTRA_FETCHES=4       # cap mal/kitsu addon requests per stream
 ID_RESOLVE_CACHE_TTL_MS=300000       # in-memory resolve cache (5 min)
 ```
 
-Fribb ingest (offline): `node --env-file=.env.local scripts/ingest-fribb.mjs`
+Fribb ingest (offline): `node --env-file=.env.local scripts/ingest-fribb.mjs`  
+AniBridge episode ingest: `node --env-file=.env.local scripts/ingest-anibridge.mjs`
 
 ### Lint / test / build
 There are **none**. `package.json` has no `scripts`, and the repo contains no test files, linter config, or build config. Do not invent these unless asked.
