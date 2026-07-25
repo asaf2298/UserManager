@@ -97,6 +97,27 @@ Optional override: `YASTREAM_URL` if you need an explicit base outside `ADDON_UR
 | `USER_CONFIGS` | JSON map of user keys → profile / name | *(see below)* |
 | `YASTREAM_URL` | Optional explicit Yastream base | *(usually omit; use `ADDON_URLS`)* |
 
+### ID mapping (opt-in, Supabase)
+
+Cross-provider ID resolution for anime (and later K-drama/soap). **Disabled by default** — when off, stream behavior is unchanged.
+
+| Variable | Role | Default |
+| --- | --- | --- |
+| `SUPABASE_URL` | Supabase project URL | — |
+| `SUPABASE_ANON_KEY` | Read-only resolver key (`personal_titles` SELECT) | — |
+| `SUPABASE_SERVICE_ROLE_KEY` | Ingest scripts only (`scripts/ingest-fribb.mjs`) | — |
+| `ID_RESOLVE_ENABLED` | Query Supabase on stream requests | `false` |
+| `ID_RESOLVE_SHADOW` | Log `[ID-RESOLVE][SHADOW]` plans without changing queries | `false` |
+| `ID_RESOLVE_QUERY` | Phase 2: additive `mal:` / `kitsu:` fan-out (never replaces `tt`) | `false` |
+| `ID_RESOLVE_TIMEOUT_MS` | Supabase lookup timeout | `400` |
+| `ID_RESOLVE_MAX_EXTRA_FETCHES` | Cap total extra addon requests per stream | `4` |
+| `ID_RESOLVE_ANIME_ADDON_PATTERNS` | Comma-separated host substrings for mal/kitsu fan-out | `torrentio,comet,mediafusion,…` |
+| `ID_RESOLVE_CACHE_TTL_MS` | In-memory resolve cache TTL | `300000` (5 min) |
+
+**Rollout:** enable `ID_RESOLVE_ENABLED` + `ID_RESOLVE_SHADOW` first and inspect logs (shadow is fire-and-forget — does not delay fan-out). Then set `ID_RESOLVE_QUERY=true` for additive anime fan-out; resolve overlaps with meta so base `tt` + text queries still start on the same schedule. Episode coords still use Stremio S/E until Phase 3 (AniBridge remapping).
+
+Fribb ingest (offline): `node --env-file=.env.local scripts/ingest-fribb.mjs`
+
 > Do **not** append `/manifest.json` to addon URLs in env vars.
 
 ### `USER_CONFIGS` shape

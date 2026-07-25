@@ -8,6 +8,7 @@ import { findYastreamBaseUrl, isYastreamProviderId } from '../lib/yastream.js';
 import {
   isIdResolveEnabled,
   isIdResolveShadow,
+  isIdResolveQueryEnabled,
   resolveContentContext,
   logShadowResolve,
 } from '../lib/idResolve.js';
@@ -370,13 +371,19 @@ export default async function handler(req, res) {
 
     if (addons.length === 0) return res.status(200).json({ streams: [] });
 
-    // Phase 1 shadow: resolve mapping context for logging only (no query changes).
+    // ID resolve is opt-in and must not delay the base tt + text fan-out.
+    // - flags off: identical to pre-mapping (no promise)
+    // - shadow only: fire-and-forget log; engine path unchanged
+    // - query on: start resolve now; engine awaits it in parallel with getContentMeta
+    let idResolvePromise = null;
     if (isIdResolveEnabled()) {
-      resolveContentContext(type, idWithExt)
-        .then((ctx) => {
-          if (ctx && isIdResolveShadow()) logShadowResolve(ctx);
-        })
-        .catch(() => {});
+      if (isIdResolveQueryEnabled()) {
+        idResolvePromise = resolveContentContext(type, idWithExt).catch(() => null);
+      } else if (isIdResolveShadow()) {
+        resolveContentContext(type, idWithExt)
+          .then((ctx) => { if (ctx) logShadowResolve(ctx); })
+          .catch(() => {});
+      }
     }
 
     const engineContext = {
@@ -387,7 +394,8 @@ export default async function handler(req, res) {
       addons,
       clientUA,
       clientIp,
-      queryHint: decodeURIComponent(req.url || '')
+      queryHint: decodeURIComponent(req.url || ''),
+      idResolvePromise,
     };
 
     const allValidStreams = await fetchAndSortStreams(type, idWithExt, engineContext);
