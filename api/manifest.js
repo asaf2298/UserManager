@@ -12,7 +12,16 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 }
 
 /**
- * Prepare a Kan-Box catalog for Esay's Board/Discovery.
+ * Kan-Box catalogs kept in Discovery but hidden from Board by marking a
+ * required extra (Stremio Board only loads catalogs with no required extras).
+ */
+const BOARD_HIDDEN_KANBOX_IDS = new Set([
+    'dbz_movies_catalog',
+    'dbz_series_catalog',
+]);
+
+/**
+ * Prepare a Kan-Box catalog for Personal Board/Discovery.
  * Live TV keeps a short Hebrew name; others get an IL - prefix.
  * Search extras are stripped so Stremio uses חיפוש משולב.
  */
@@ -29,12 +38,26 @@ function prepareKanboxCatalog(cat, { isLive = false } = {}) {
         ? cat.extra.filter(e => e.name !== 'search')
         : [];
 
-    return {
+    const prepared = {
         ...cat,
         name,
         // Browsable catalogs need a defined extra array even if only search was stripped
         extra: nonSearchExtra.length > 0 ? nonSearchExtra : []
     };
+
+    // Board-hide: require genre so Board skips it; Discover still lists it
+    if (BOARD_HIDDEN_KANBOX_IDS.has(String(cat.id || ''))) {
+        const existingGenre = prepared.extra.find(e => e.name === 'genre');
+        const genre = existingGenre
+            ? { ...existingGenre, isRequired: true }
+            : { name: 'genre', isRequired: true, options: ['הכל'] };
+        prepared.extra = [
+            ...prepared.extra.filter(e => e.name !== 'genre'),
+            genre
+        ];
+    }
+
+    return prepared;
 }
 
 export default async function handler(req, res) {
@@ -91,7 +114,7 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.10.3",
+            version: "2.10.4",
             name: `Personal - ${userConfig.name || userKey}`,
             description: "Personal Aggregator with Unified Search & LiveTV Israel",
             idPrefixes: [

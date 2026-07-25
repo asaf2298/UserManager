@@ -1,15 +1,20 @@
 # UserManager-Stremio (Vecret / Personal Proxy)
 
-Vecret is a serverless proxy and aggregator for **Stremio and Kodi** addons, built for **Vercel Serverless Functions**. It fans out to multiple upstream addons in parallel, then filters, pre-sorts, deduplicates, and quota-slices streams and subtitles into a fast, profile-aware response.
+Vecret (**Personal**, formerly Esay) is a serverless proxy and aggregator for **Stremio and Kodi** addons, built for **Vercel Serverless Functions**. It fans out to multiple upstream addons in parallel, then filters, pre-sorts, deduplicates, and quota-slices streams and subtitles into a fast, profile-aware response.
+
+Stremio install name: **`Personal - {name}`** (from `USER_CONFIGS`).
+
+Current manifest version: **2.10.4**.
 
 ---
 
 ## Key Features
 
 ### Smart two-phase stream timeout
-* Fans out to all stream addons in parallel.
+* Fans out to all stream addons in parallel (IMDb/TMDB id + primary title `search=`).
 * Waits an initial **5.5s** burst (`INITIAL_WAIT_MS`), then uses the remaining profile budget (up to **9.5s** on `everything` / `friends_heavy`, and for capable clients like Nuvio/Kodi).
-* **Multi-language text-search backup** (English / Hebrew / Russian / original title) runs **sequentially and only if** the primary IMDb/TMDB id fan-out returned fewer than 4 raw hits — preserving Vercel time.
+* **Early-stop:** if the finalized list already fills `maxResults`, returns after the burst without waiting out the full timeout.
+* **Multi-language text-search backup** (English / Hebrew / Russian / original title) runs **sequentially and only if** the primary fan-out is still thin or VIP hosts returned nothing.
 * If the request hints at dubbed content (`דיבוב` / `מדובב`), Hebrew titles are preferred for text search.
 
 ### Pre-sort + bucket quotas (`drawWithOverflow`)
@@ -22,6 +27,7 @@ Vecret is a serverless proxy and aggregator for **Stremio and Kodi** addons, bui
 * Reserved slots after quotas:
   * `everything` / `friends_heavy`: up to **3** Uncached 4K, **3** Uncached 1080p, **3** Direct Web
   * `friends_light` / `family`: **1** of each
+* Episode queries drop oversized **season-pack** rows when the non-pack list already fills `maxResults`.
 
 ### Dynamic Hebrew stream tags
 * `זמין לצפייה` — Cached / Debrid-ready
@@ -33,26 +39,50 @@ Vecret is a serverless proxy and aggregator for **Stremio and Kodi** addons, bui
 Streams are forced into the Uncached bucket when titles/ids contain signals such as:
 `⏳` `⌛` `uncached` / `un-cached` / `not cached`, `⬇️` / `download` / `downloading`, `download to debrid`, `to debrid`, `instant=false`, `cached:no`, `[DL]`, etc. (spaces / hyphens / underscores optional).
 
-### Fake HDR penalty (pre-2015)
-True HDR/DV/HLG tags (`HDR`, `HDR10`, `HDR10+`, `HLG`, `Dolby Vision`, `DoVi`, `DV` with safe boundaries) still boost visual score. If the title’s release year is **before 2015** and it still carries those tags, a **significant scoring penalty** is applied so fake upscales do not outrank honest SDR remuxes/rips.
+Bracket debrid tags: `[TB+]` / `[RD⚡]` (and similar) mean **cached**; bare `[TB]` / `[RD]` mean **uncached**.
+
+### Notice / fake-stream filter
+Non-playable “notice” rows from upstreams are dropped (Yuki `[YS INFO]` / `[YS NOTICE]`, Pengu donate/sign-in, Comet sync/metadata errors, Einthusan-style “no results”, etc.).
+
+### Fake HDR / upscale penalties
+True HDR/DV/HLG tags still boost visual score. Self-declared AI/upscales and contradictory “fake quality” claims are penalized. Pre-**2015** titles with HDR tags get a mild caution nudge.
 
 ### Smart subtitles
 * Dynamic race: at **6s**, cut early if ≥3 Hebrew subs; otherwise extend to **9s**.
 * Language allowlist (he / en / ru); if none match, **any available format** is returned as fallback.
-* **Duration matching (±5%):** compares subtitle duration (provider fields, title patterns, or a light SRT peek) to TMDB/Cinemeta runtime. Matches get a large bonus and rise to the top.
-* Display titles include provider, score (`★N`), and sync/duration hints.
-* All subtitle URLs are routed through `/api/sub-proxy`, which re-emits bodies as **UTF-8** (strips Windows-1255 / ISO-8859-8 legacy encodings).
+* **Duration matching (±5%):** compares subtitle duration to TMDB/Cinemeta runtime. Matches get a large bonus.
+* Display titles include provider (`Personal Sub`), score (`★N`), and sync/duration hints.
+* All subtitle URLs are routed through `/api/sub-proxy` as **UTF-8**.
 
 ### Israeli catalogs (Kan-Box)
-Board/Discovery include **all** Kan-Box catalogs: **ערוצים חיים** first, then `חיפוש משולב*`, then the remaining IL VOD/podcast/DBZ rows.
+All Kan-Box catalogs are advertised in the Personal manifest:
+
+1. **ערוצים חיים** (`Live_TV_Channels`) — first
+2. Unified search catalogs (`חיפוש משולב*`)
+3. Remaining IL VOD / podcast / Dragon Ball rows (prefixed `IL - ` when needed)
+
+**Board vs Discover:** Stremio Board only loads catalogs with no *required* extras. Dragon Ball (`dbz_movies_catalog`, `dbz_series_catalog`) keep a required `genre` extra so they appear in **Discover** but not on the **Board**. Everything else remains on both.
+
+Catalog `search` extras on Kan-Box rows are stripped so Stremio search goes through Personal’s unified search instead.
 
 ### Unified search
-* `חיפוש משולב` (movie / series) — ~3s soft deadline; no VIP hosts (Kan-Box / AnimeIL).
-* `חיפוש משולב - complete` — ~3s; VIP + anime/tv/channel types (excludes movie/series catalog types).
-* `חיפוש משולב - full` — ~8s wall budget (discovery + fan-out), all types + VIP; drops metas already returned by the fast three for the same query.
+Wall-clock budgets (discovery + fan-out) stay under Vercel Hobby’s ~10s limit; fetch + JSON share one timeout so stalled bodies cannot hang the request.
+
+| Catalog | Soft / wall budget | Scope |
+| --- | --- | --- |
+| `חיפוש משולב` (movie) | ~**3s** | Movie-type search catalogs; **no** VIP hosts |
+| `חיפוש משולב` (series) | ~**3s** | Series-type search catalogs; **no** VIP hosts |
+| `חיפוש משולב - complete` | ~**3s** | Non-movie/series types + **VIP** (Kan-Box / AnimeIL) |
+| `חיפוש משולב - full` | ~**8s** | All searchable types + **VIP**; excludes meta ids already returned by the fast three for the same query |
 
 ### Yastream Asian providers
-When Yastream is in `ADDON_URLS`, Esay accepts `kisskh:` / `idrama:` / `onetouchtv:` ids (meta + stream proxied to Yastream). Search hits that expose an IMDb id in artwork are rewritten to `tt…` so Cinemeta + the normal stream fan-out apply.
+Put Yastream in `ADDON_URLS` (no separate env required):
+
+* Normal `tt` / `tt:S:E` streams fan out like any other stream addon.
+* Provider ids `kisskh:` / `idrama:` / `onetouchtv:` are accepted in the manifest; **meta** and **stream** for those ids are proxied only to Yastream.
+* Mixed-search hits that expose an IMDb id in artwork/fields are rewritten to `tt…` so Cinemeta + the normal fan-out apply.
+
+Optional override: `YASTREAM_URL` if you need an explicit base outside `ADDON_URLS`.
 
 ---
 
@@ -60,11 +90,12 @@ When Yastream is in `ADDON_URLS`, Esay accepts `kisskh:` / `idrama:` / `onetouch
 
 | Variable | Role | Example |
 | --- | --- | --- |
-| `ADDON_URLS` | Stream addon bases, separated by `\|\|\|` | `https://torrentio.strem.fun/sort=...\|\|\|https://...` |
-| `SUBTITLE_URLS` | Subtitle addon bases, separated by `\|\|\|` | `https://opensubtitles-v3.strem.io\|\|\|https://sub.scary.network` |
+| `ADDON_URLS` | Stream addon bases, separated by `\|\|\|` | `https://torrentio.strem.fun/...\|\|\|https://yastream...` |
+| `SUBTITLE_URLS` | Subtitle addon bases, separated by `\|\|\|` | `https://opensubtitles-v3.strem.io\|\|\|https://...` |
 | `TV_ADDON_URL` | Israeli live / Kan-Box addon base | `https://kan-box-addon.vercel.app` |
 | `TMDB_API_KEY` | TMDB v3 API key (titles, year, runtime) | `KEY...` |
 | `USER_CONFIGS` | JSON map of user keys → profile / name | *(see below)* |
+| `YASTREAM_URL` | Optional explicit Yastream base | *(usually omit; use `ADDON_URLS`)* |
 
 > Do **not** append `/manifest.json` to addon URLs in env vars.
 
@@ -105,6 +136,16 @@ Capable clients (User-Agent containing `nuvio`, `kodi`, or `libmpv`) are bumped 
 
 ---
 
+## Local development
+
+```bash
+node --env-file=.env.local dev-server.mjs   # http://localhost:3000
+```
+
+No hot reload — restart after editing `api/` or `lib/`. See `AGENTS.md` for cloud/egress notes (many public stream addons return 403 from datacenter IPs).
+
+---
+
 ## Install
 
 ### Stremio
@@ -125,7 +166,7 @@ GET /api/kodi-catalog?userKey=my_secret_master_key&list=catalogs
 ## Diagnostics
 
 Watch Vercel **Logs** for tags such as:
-`[ESAY STREAM]`, `[ESAY QUOTA]`, `[ESAY SUBTITLES]`, `[ESAY SUB-PROXY]`, `[META HELPER]`, `[ESAY DIAGNOSTIC]`.
+`[ESAY STREAM]`, `[ESAY SEARCH]`, `[ESAY QUOTA]`, `[ESAY SUBTITLES]`, `[ESAY SUB-PROXY]`, `[META HELPER]`, `[ESAY DIAGNOSTIC]`.
 
 ---
 
