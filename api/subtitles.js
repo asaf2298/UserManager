@@ -2,7 +2,7 @@ import fetch from 'node-fetch';
 import http from 'http';
 import https from 'https';
 import { getContentMeta, buildSearchTitles, isDubbedQuery } from './search.js';
-import { parseSubtitleDurationMinutes } from '../lib/subtitleUtils.js';
+import { parseSubtitleDurationMinutes, detectSubtitleScriptLang } from '../lib/subtitleUtils.js';
 
 const httpAgent = new http.Agent();
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
@@ -89,23 +89,39 @@ function durationWithinTolerance(subMin, videoMin) {
     return deviation <= DURATION_MATCH_PCT;
 }
 
+/**
+ * Map provider lang → heb|eng|rus. Returns null for unknown/other.
+ * NEVER defaults unknown → heb (that caused English tracks labeled Hebrew on TVs).
+ */
+function classifySubtitleLang(rawLang) {
+    if (!rawLang) return null;
+    const l = String(rawLang).toLowerCase().trim();
+
+    const isHeb =
+        ['he', 'heb', 'hebrew', 'iw', 'he-il', 'עברית'].includes(l) ||
+        l.includes('heb') ||
+        l.includes('עברית') ||
+        l.includes('make hebrew') ||
+        l.includes('submaker');
+    if (isHeb) return 'heb';
+
+    const isRus =
+        l === 'ru' || l === 'rus' || l === 'russian' ||
+        l.startsWith('ru ') || l.startsWith('rus ') ||
+        (l.includes('rus') && !l.includes('heb'));
+    if (isRus) return 'rus';
+
+    const isEng =
+        l === 'en' || l === 'eng' || l === 'english' || l === 'en-us' || l === 'en-gb' ||
+        l.startsWith('en ') || l.startsWith('eng ') ||
+        (l.includes('eng') && !l.includes('heb'));
+    if (isEng) return 'eng';
+
+    return null;
+}
+
 function isAllowedLang(rawLang) {
-    if (!rawLang) return false;
-    const l = rawLang.toLowerCase().trim();
-    
-    const exactMatches = [
-        'he', 'heb', 'hebrew', 'iw', 'he-il', 'עברית',
-        'ru', 'rus', 'russian',
-        'en', 'eng', 'english', 'en-us', 'en-gb',
-        'submaker', 'make hebrew', 'forced'
-    ];
-    
-    if (exactMatches.includes(l)) return true;
-    if (l.includes('heb') || l.includes('עברית')) return true;
-    if (l.includes('rus')) return true;
-    if (l.startsWith('en ') || l.startsWith('eng ')) return true;
-    
-    return false;
+    return classifySubtitleLang(rawLang) != null;
 }
 
 function buildProxyUrl(req, originalUrl) {
@@ -241,10 +257,7 @@ export default async function handler(req, res) {
         // === לוגיקת הטיימר הדינמי (Race Condition) ===
         const dynamicTimeout = new Promise((resolve) => {
             setTimeout(() => {
-                const hebCount = gatheredSubs.filter(sub => {
-                    const l = String(sub.lang || '').toLowerCase().trim();
-                    return l.includes('heb') || l.includes('עברית') || l === 'he' || l === 'iw' || l === 'he-il';
-                }).length;
+                const hebCount = gatheredSubs.filter(sub => classifySubtitleLang(sub.lang) === 'heb').length;
 
                 if (hebCount >= 3) {
                     console.log(`[ESAY TIMEOUT] ⏱️ עברו 6 שניות. יש ${hebCount} כתוביות בעברית -> חותך את ההמתנה!`);
@@ -275,78 +288,86 @@ export default async function handler(req, res) {
             if (sub.url && seenUrls.has(sub.url)) continue;
             
             const langStr = (sub.lang || 'unknown').toLowerCase().trim();
-            if (isAllowedLang(langStr)) {
+            const classified = classifySubtitleLang(langStr);
+            if (classified) {
                 if (sub.url) seenUrls.add(sub.url);
                 keptLangs[langStr] = (keptLangs[langStr] || 0) + 1;
                 sub._providerName = (sub.id && sub.id.includes('opensubtitles')) ? 'OpenSubtitles' : sub.calculatedProvider;
+                sub._classifiedLang = classified;
                 uniqueSubs.push(sub);
             } else {
                 droppedLangs[langStr] = (droppedLangs[langStr] || 0) + 1;
             }
         }
 
-        // Fallback: if required languages yielded nothing, keep any format/lang we got
+        // Honest empty > fake Hebrew. Never fall back to arbitrary langs labeled as heb.
         if (uniqueSubs.length === 0 && gatheredSubs.length > 0) {
-            console.log(`[ESAY SUBTITLES] ⚠️ אין כתוביות בשפות מועדפות — מחזיר כל פורמט זמין (${gatheredSubs.length})`);
-            for (const sub of gatheredSubs) {
-                if (sub.url && seenUrls.has(sub.url)) continue;
-                if (sub.url) seenUrls.add(sub.url);
-                sub._providerName = sub.calculatedProvider || 'Personal Sub';
-                uniqueSubs.push(sub);
-            }
+            console.log(
+                `[ESAY SUBTITLES] ⚠️ אין heb/eng/rus מאומתים מבין ${gatheredSubs.length} תוצאות — מחזיר ריק (לא מסמנים שפות אחרות כעברית)`
+            );
         }
 
         console.log(`\n[ESAY DIAGNOSTIC] 📊 דו"ח סינון שפות:`);
         console.log(`✅ שפות שאושרו ונשמרו:`, keptLangs);
         console.log(`🚫 שפות שנחסמו ונמחקו:`, droppedLangs);
 
-        // Optional light SRT duration peek for top candidates missing declared duration
-        // (bounded concurrency + short timeout so we stay inside Vercel budget)
-        async function peekSrtDuration(url) {
+        async function peekSrt(url) {
             try {
                 const resp = await fetchWithTimeout(url, {
                     headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'text/plain,*/*', 'Range': 'bytes=0-65535' },
                     agent: dynamicAgent
                 }, 2500);
-                if (!resp.ok) return null;
+                if (!resp.ok) return { durationMin: null, scriptLang: null };
                 const text = await resp.text();
-                return parseSubtitleDurationMinutes(text);
+                return {
+                    durationMin: parseSubtitleDurationMinutes(text),
+                    scriptLang: detectSubtitleScriptLang(text),
+                };
             } catch {
-                return null;
+                return { durationMin: null, scriptLang: null };
             }
         }
 
         const cleanedSubs = [];
         const seenSubs = new Set();
         let durationBonusCount = 0;
+        let mislabelDropped = 0;
 
-        // Pre-compute declared durations; peek SRT only for first 8 without one when we know video runtime
+        // Pre-compute declared durations; peek SRT for duration and/or Hebrew verification
         const withMeta = [];
         for (const sub of uniqueSubs) {
             if (!sub.url) continue;
             let subDur = extractDeclaredDurationMin(sub);
-            withMeta.push({ sub, subDur });
+            withMeta.push({ sub, subDur, scriptLang: null });
         }
 
-        if (videoRuntimeMin) {
-            const needPeek = withMeta.filter(x => !x.subDur).slice(0, 8);
-            await Promise.all(needPeek.map(async (x) => {
-                x.subDur = await peekSrtDuration(x.sub.url);
-            }));
-        }
+        const needPeek = withMeta
+            .filter(x => (videoRuntimeMin && !x.subDur) || x.sub._classifiedLang === 'heb')
+            .slice(0, 12);
+        await Promise.all(needPeek.map(async (x) => {
+            const peek = await peekSrt(x.sub.url);
+            if (!x.subDur) x.subDur = peek.durationMin;
+            x.scriptLang = peek.scriptLang;
+        }));
 
-        withMeta.forEach(({ sub, subDur }, index) => {
+        withMeta.forEach(({ sub, subDur, scriptLang }, index) => {
             const l = String(sub.lang || '').toLowerCase().trim();
-            let lang = 'heb';
-            let displayType = ''; 
+            let lang = sub._classifiedLang || classifySubtitleLang(l);
+            if (!lang) return;
 
-            if (['ru', 'rus', 'russian'].some(s => l.includes(s))) {
-                lang = 'rus';
-            } else if (['en', 'eng', 'english', 'en-us', 'en-gb'].some(s => l.includes(s))) {
-                lang = 'eng';
-            } else {
-                lang = 'heb';
-                if (l.includes('make') || l.includes('submaker')) displayType = ' [AI 🤖]';
+            // Provider said Hebrew but file body is clearly not → drop (don't show fake HE on TV)
+            if (lang === 'heb' && scriptLang && scriptLang !== 'heb') {
+                mislabelDropped++;
+                console.log(
+                    `[ESAY SUBTITLES] 🚫 כתובית סומנה עברית אך התוכן=${scriptLang} — מושמטת | ${String(sub.title || sub.id || '').slice(0, 60)}`
+                );
+                return;
+            }
+            if (scriptLang === 'heb') lang = 'heb';
+
+            let displayType = '';
+            if (lang === 'heb' && (l.includes('make') || l.includes('submaker'))) {
+                displayType = ' [AI 🤖]';
             }
 
             const subKey = `${sub.url}|${lang}`;
@@ -374,14 +395,12 @@ export default async function handler(req, res) {
             let warning = (sub.behaviorHints?.notWebReady) ? ' ⚠️ נגן חיצוני' : '';
             const rawTitle = String(sub.title || 'כתובית').replace(/\n+/g, ' ').trim();
 
-            // Richer Stremio label: provider + sync score + optional duration match
             const scoreLabel = `★${Math.round(smartScore)}`;
             const durLabel = durationMatch
                 ? ` sync✓${Math.round((1 - deviationPct) * 100)}%`
                 : (subDur ? ` ${Math.round(subDur)}m` : '');
             const finalTitle = `${rawTitle}${displayType} [${provider}] ${scoreLabel}${durLabel}${warning}`.replace(/\s{2,}/g, ' ').trim();
 
-            // Route through UTF-8 proxy so clients always get clean charset
             const proxiedUrl = buildProxyUrl(req, String(sub.url));
 
             const compliantSub = {
@@ -400,6 +419,9 @@ export default async function handler(req, res) {
 
         if (durationBonusCount > 0) {
             console.log(`[ESAY SUBTITLES] 🎯 בונוס התאמת משך (±5%) הוענק ל-${durationBonusCount} כתוביות (וידאו=${videoRuntimeMin}m)`);
+        }
+        if (mislabelDropped > 0) {
+            console.log(`[ESAY SUBTITLES] 🧹 הוסרו ${mislabelDropped} כתוביות שסומנו עברית אך אינן בעברית`);
         }
 
         // מיון חכם — best first (descending score), Hebrew preferred
