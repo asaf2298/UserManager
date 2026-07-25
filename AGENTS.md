@@ -9,8 +9,9 @@ Vecret ("Personal", formerly Esay) is a **Vercel serverless proxy/aggregator for
 Supabase project tables: `personal_titles`, `personal_episode_map`, `personal_akas`, `personal_show_rules`, `personal_ingest_meta`, `personal_resolve_cache`. Do **not** modify existing `media_mappings` / `media_workflows`.
 
 ```
-SUPABASE_URL=https://….supabase.co
-SUPABASE_SERVICE_ROLE_KEY=…          # server-only, never in client
+SUPABASE_URL=https://gihkgnadwxpopvspeskb.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=…          # ingest scripts; server resolve can use anon instead
+SUPABASE_ANON_KEY=…                    # optional read-only resolver key
 ID_RESOLVE_ENABLED=false             # true to query Supabase on stream
 ID_RESOLVE_SHADOW=true               # log [ID-RESOLVE][SHADOW] only; no query changes
 ID_RESOLVE_TIMEOUT_MS=200

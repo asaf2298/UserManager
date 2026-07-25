@@ -38,10 +38,16 @@ function mapMediaType(entry) {
   return 'series';
 }
 
+function firstScalar(value) {
+  if (value == null) return null;
+  if (Array.isArray(value)) return firstScalar(value[0]);
+  return value;
+}
+
 function mapTmdbId(entry) {
   const tmdb = entry.themoviedb_id;
   if (!tmdb || typeof tmdb !== 'object') return null;
-  return tmdb.tv ?? tmdb.movie ?? null;
+  return firstScalar(tmdb.tv ?? tmdb.movie ?? null);
 }
 
 function rowFromFribb(entry) {
@@ -62,11 +68,11 @@ function rowFromFribb(entry) {
   return {
     imdb_id: imdbId,
     tmdb_id: mapTmdbId(entry),
-    tvdb_id: entry.tvdb_id ?? null,
-    mal_id: mal,
-    kitsu_id: kitsu,
-    anilist_id: anilist,
-    anidb_id: anidb,
+    tvdb_id: firstScalar(entry.tvdb_id),
+    mal_id: firstScalar(entry.mal_id),
+    kitsu_id: firstScalar(entry.kitsu_id),
+    anilist_id: firstScalar(entry.anilist_id),
+    anidb_id: firstScalar(entry.anidb_id),
     media_type: mapMediaType(entry),
     category: isAnime ? 'anime' : 'unknown',
     primary_title: null,
