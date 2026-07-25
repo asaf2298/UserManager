@@ -112,7 +112,7 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.10.5",
+            version: "2.11.0",
             name: `Personal - ${userConfig.name || userKey}`,
             description: "Personal Aggregator with Unified Search & LiveTV Israel",
             idPrefixes: [
