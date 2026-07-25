@@ -16,6 +16,8 @@ ID_RESOLVE_ENABLED=false             # true to query Supabase on stream
 ID_RESOLVE_SHADOW=true               # log [ID-RESOLVE][SHADOW] plans
 ID_RESOLVE_QUERY=false               # Phase 2: additive mal:/kitsu: fan-out (never replaces tt)
 ID_RESOLVE_TIMEOUT_MS=400
+ID_RESOLVE_MAX_EXTRA_FETCHES=4       # cap mal/kitsu addon requests per stream
+ID_RESOLVE_CACHE_TTL_MS=300000       # in-memory resolve cache (5 min)
 ```
 
 Fribb ingest (offline): `node --env-file=.env.local scripts/ingest-fribb.mjs`
