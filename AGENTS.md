@@ -19,7 +19,7 @@ ID_RESOLVE_EPISODE=false             # Phase 3: apply AniBridge episode remap to
 ID_RESOLVE_ALIAS=false               # Phase 4: conservative synonym text search on anime addons
 ID_RESOLVE_TIMEOUT_MS=400
 ID_RESOLVE_MAX_EXTRA_FETCHES=4       # cap mal/kitsu addon requests per stream
-ID_RESOLVE_MAX_ALIAS_SEARCHES=1      # cap alias text searches per stream
+ID_RESOLVE_MAX_ALIAS_SEARCHES=1      # 1=immediate only; 2=+1 deferred when thin after 5.5s
 ID_RESOLVE_CACHE_TTL_MS=300000       # in-memory resolve cache (5 min)
 ```
 
