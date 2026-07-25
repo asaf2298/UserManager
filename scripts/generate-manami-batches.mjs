@@ -3,7 +3,7 @@
  * Build Manami synonym rows for personal_akas and write JSON batches for RPC ingest.
  *
  * Matches Manami entries to personal_titles via MAL id. Only imdb-linked titles get aliases
- * (stream resolver is tt-keyed).
+ * (stream resolver is tt-keyed). Prefers origin-language synonyms (JP→ja + romaji for anime).
  *
  * Usage:
  *   node --env-file=.env.local scripts/generate-manami-batches.mjs [--out-dir /tmp/manami-batches]
@@ -11,12 +11,17 @@
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import fetch from 'node-fetch';
+import {
+  detectTitleLanguage,
+  aliasIngestWeight,
+  shouldKeepAnimeAlias,
+} from '../lib/titleLanguage.js';
 
 const MANAMI_URL =
   'https://github.com/manami-project/anime-offline-database/releases/download/2026-27/anime-offline-database-minified.json';
 const BATCH_SIZE = 2000;
 const SOURCE = 'manami';
-const MAX_SYNONYMS_PER_TITLE = 8;
+const MAX_SYNONYMS_PER_TITLE = 10;
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -63,7 +68,7 @@ async function fetchMalToImdb(supabaseUrl, key) {
   let offset = 0;
   while (true) {
     const params = new URLSearchParams({
-      select: 'imdb_id,mal_id,primary_title',
+      select: 'imdb_id,mal_id,primary_title,category,origin_countries',
       imdb_id: 'not.is.null',
       mal_id: 'not.is.null',
       limit: String(pageSize),
@@ -84,6 +89,8 @@ async function fetchMalToImdb(supabaseUrl, key) {
         map.set(row.mal_id, {
           imdb_id: row.imdb_id,
           primary_title: row.primary_title || null,
+          category: row.category || 'anime',
+          origin_countries: row.origin_countries || [],
         });
       }
     }
@@ -98,6 +105,8 @@ function buildAkaRows(manamiData, malToImdb) {
   const seen = new Set();
   let matched = 0;
   let skippedNoImdb = 0;
+  let droppedForeign = 0;
+  const langCounts = {};
 
   for (const entry of manamiData) {
     const mal = malFromSources(entry.sources);
@@ -111,20 +120,49 @@ function buildAkaRows(manamiData, malToImdb) {
 
     const candidates = [];
     if (isUsefulAlias(entry.title)) {
-      candidates.push({ title: entry.title.trim(), kind: 'display', weight: 20 });
+      const language = detectTitleLanguage(entry.title) || 'latin';
+      candidates.push({
+        title: entry.title.trim(),
+        kind: 'display',
+        language,
+        weight: aliasIngestWeight('display', language),
+      });
     }
     for (const syn of entry.synonyms || []) {
       if (!isUsefulAlias(syn)) continue;
-      candidates.push({ title: syn.trim(), kind: 'synonym', weight: 10 });
+      const title = syn.trim();
+      const language = detectTitleLanguage(title) || 'other';
+      // Anime / JP pool: keep native + romaji, drop random translations
+      if (link.category === 'anime' || (link.origin_countries || []).includes('JP')) {
+        if (!shouldKeepAnimeAlias('synonym', language, title)) {
+          droppedForeign++;
+          continue;
+        }
+      }
+      candidates.push({
+        title,
+        kind: 'synonym',
+        language,
+        weight: aliasIngestWeight('synonym', language),
+      });
     }
+
+    // Prefer ja/native first, then display, then romaji
+    candidates.sort((a, b) => b.weight - a.weight || a.title.localeCompare(b.title));
 
     const used = new Set();
     if (link.primary_title) used.add(normalizeTitle(link.primary_title));
 
     let added = 0;
+    let addedJa = 0;
+    let addedLatin = 0;
     for (const c of candidates) {
       const key = `${link.imdb_id}|${normalizeTitle(c.title)}|${c.kind}`;
       if (seen.has(key) || used.has(normalizeTitle(c.title))) continue;
+      // Cap latin synonyms tighter so ja titles always fit
+      if (c.language === 'latin' && c.kind === 'synonym' && addedLatin >= 3) continue;
+      if (c.language === 'ja' && addedJa >= 4) continue;
+
       seen.add(key);
       used.add(normalizeTitle(c.title));
       rows.push({
@@ -132,16 +170,19 @@ function buildAkaRows(manamiData, malToImdb) {
         title: c.title,
         kind: c.kind,
         weight: c.weight,
-        language: null,
-        region: null,
+        language: c.language,
+        region: c.language === 'ja' ? 'JP' : null,
         source: SOURCE,
       });
+      langCounts[c.language] = (langCounts[c.language] || 0) + 1;
+      if (c.language === 'ja') addedJa++;
+      if (c.language === 'latin') addedLatin++;
       added++;
       if (added >= MAX_SYNONYMS_PER_TITLE) break;
     }
   }
 
-  return { rows, matched, skippedNoImdb };
+  return { rows, matched, skippedNoImdb, droppedForeign, langCounts };
 }
 
 async function main() {
@@ -161,10 +202,11 @@ async function main() {
   const manamiData = manamiJson.data || manamiJson;
   if (!Array.isArray(manamiData)) throw new Error('Manami JSON has no data array');
 
-  const { rows, matched, skippedNoImdb } = buildAkaRows(manamiData, malToImdb);
+  const { rows, matched, skippedNoImdb, droppedForeign, langCounts } = buildAkaRows(manamiData, malToImdb);
   console.log(
     `[generate-manami] ${manamiData.length} manami entries | mal→imdb map=${malToImdb.size}` +
-      ` | matched=${matched} skippedNoImdb=${skippedNoImdb} | aka rows=${rows.length}`
+      ` | matched=${matched} skippedNoImdb=${skippedNoImdb} droppedForeign=${droppedForeign}` +
+      ` | aka rows=${rows.length} langs=${JSON.stringify(langCounts)}`
   );
 
   mkdirSync(outDir, { recursive: true });
@@ -183,6 +225,8 @@ async function main() {
     batchSize: BATCH_SIZE,
     batches,
     rpc: 'personal_ingest_aka_rows',
+    langCounts,
+    droppedForeign,
   };
   writeFileSync(join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
   console.log(`[generate-manami] wrote ${batches.length} batches to ${outDir}`);

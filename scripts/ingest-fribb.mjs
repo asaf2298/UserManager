@@ -77,6 +77,7 @@ function baseRowFromFribb(entry) {
     anidb_id: anidb,
     media_type: mapMediaType(entry),
     category: isAnime ? 'anime' : 'unknown',
+    origin_countries: isAnime ? ['JP'] : [],
     primary_title: null,
     titles: { synonyms: [] },
     hints,
