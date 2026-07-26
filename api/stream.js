@@ -1,10 +1,12 @@
 import fetch from 'node-fetch';
-import { fetchAndSortStreams } from '../lib/streamEngine.js';
-import {
-  isCached, isVIPSource, isDirectWebStream, getResWeight,
-  masterSortFunc, REGEX_BRACKETS, REGEX_PARENS, REGEX_DOWNLOAD, isNoticeStream
-} from '../lib/utils.js';
+import { retrieveRankAndSelect } from '../lib/streamEngine.js';
+import { REGEX_BRACKETS, REGEX_PARENS, REGEX_DOWNLOAD, isNoticeStream } from '../lib/utils.js';
 import { findYastreamBaseUrl, isYastreamProviderId } from '../lib/yastream.js';
+import { resolveProfile, DEFAULT_PROFILE, scoreBreakdown } from '../lib/streamRanker.js';
+import { RESOLUTION } from '../lib/releaseParser.js';
+import { TRANSPORT, CACHE_CLAIM } from '../lib/providerCapabilities.js';
+import { upsertStreamSightings } from '../lib/streamSighting.js';
+import { recordRankingAudits } from '../lib/rankingTelemetry.js';
 import {
   isIdResolveEnabled,
   isIdResolveShadow,
@@ -13,224 +15,86 @@ import {
   logShadowResolve,
 } from '../lib/idResolve.js';
 
-const PROFILES = {
-  // Capable profiles push closer to Vercel's ~10s ceiling for richer fan-out
-  everything: { maxResults: 30, maxSizeGB: Infinity, minSeedersUncached: 1, timeoutMs: 9500 },
-  friends_heavy: { maxResults: 30, maxSizeGB: Infinity, minSeedersUncached: 3, timeoutMs: 9500 },
-  friends_light: { maxResults: 10, maxSizeGB: 30, minSeedersUncached: 4, timeoutMs: 9000 },
-  family: { maxResults: 10, maxSizeGB: 30, minSeedersUncached: 4, timeoutMs: 9000 }
+/** Short resolution badge shown next to the provider name. */
+const RES_LABELS = {
+  [RESOLUTION.R2160]: '4K',
+  [RESOLUTION.R1440]: '2K',
+  [RESOLUTION.R1080]: 'FHD',
+  [RESOLUTION.R720]: 'HD',
+  [RESOLUTION.SD]: 'SD',
+  [RESOLUTION.R360]: 'SD',
+  [RESOLUTION.UNKNOWN]: '',
 };
 
-const MAX_VIP_SLOTS = 3;
-const MAX_HEBREW_RESERVE = 2;
-const MIN_PER_RESOLUTION = 2;
-
-function applyQuotasAndSlice(streams, profileConfig, maxResults) {
-  const vipStreams = [];
-  const hebrewMatches = [];
-  const standardStreams = [];
-  for (const stream of streams) {
-    if (isVIPSource(stream)) {
-      vipStreams.push(stream);
-      continue;
-    }
-    // Engine marks confirmed Hebrew+same-title hits — always leave room for them
-    if (stream._hebrewMatch) {
-      hebrewMatches.push(stream);
-      continue;
-    }
-    standardStreams.push(stream);
-  }
-
-  const buckets = { '4k_c': [], '4k_u': [], '1080p_c': [], '1080p_u': [], '720p_c': [], '720p_u': [], 'sd_c': [], 'sd_u': [] };
-  for (const s of standardStreams) {
-    const isC = isCached(s);
-    const rw = getResWeight(s);
-    const sfx = isC ? '_c' : '_u';
-    if (rw === 4) buckets[`4k${sfx}`].push(s);
-    else if (rw === 3) buckets[`1080p${sfx}`].push(s);
-    else if (rw === 2) buckets[`720p${sfx}`].push(s);
-    else buckets[`sd${sfx}`].push(s);
-  }
-
-  const isBigProfile = (profileConfig === 'everything' || profileConfig === 'friends_heavy');
-  // Cached-first quotas; uncached absorbs shortage via drawWithOverflow
-  const quotas = isBigProfile
-    ? { '4k_c': 12, '4k_u': 3, '1080p_c': 6, '1080p_u': 3, '720p_c': 3, '720p_u': 1, 'sd_c': 2, 'sd_u': 1 }
-    : { '4k_c': 3, '4k_u': 1, '1080p_c': 3, '1080p_u': 1, '720p_c': 2, '720p_u': 0, 'sd_c': 0, 'sd_u': 0 };
-
-  const standardResult = [];
-  function drawWithOverflow(resLevel, qC, qU) {
-    const pulledC = buckets[`${resLevel}_c`].splice(0, qC);
-    standardResult.push(...pulledC);
-    const missingC = qC - pulledC.length;
-    const targetU = qU + missingC;
-    const pulledU = buckets[`${resLevel}_u`].splice(0, targetU);
-    standardResult.push(...pulledU);
-    let missing = targetU - pulledU.length;
-    if (missing > 0 && buckets[`${resLevel}_c`].length > 0) {
-      const extraC = buckets[`${resLevel}_c`].splice(0, missing);
-      standardResult.push(...extraC);
-      missing -= extraC.length;
-    }
-    return missing;
-  }
-
-  // Fill Cached first per resolution: 4K -> 1080p -> 720p -> SD
-  drawWithOverflow('4k', quotas['4k_c'], quotas['4k_u']);
-  drawWithOverflow('1080p', quotas['1080p_c'], quotas['1080p_u']);
-  drawWithOverflow('720p', quotas['720p_c'], quotas['720p_u']);
-  drawWithOverflow('sd', quotas['sd_c'], quotas['sd_u']);
-
-  // Enforce minimum of 2 items per resolution when available (pull from leftover buckets)
-  for (const resLevel of ['4k', '1080p', '720p', 'sd']) {
-    const countInResult = standardResult.filter(s => {
-      const rw = getResWeight(s);
-      return (resLevel === '4k' && rw === 4) ||
-        (resLevel === '1080p' && rw === 3) ||
-        (resLevel === '720p' && rw === 2) ||
-        (resLevel === 'sd' && rw <= 1);
-    }).length;
-    let need = Math.max(0, MIN_PER_RESOLUTION - countInResult);
-    while (need > 0) {
-      const fromC = buckets[`${resLevel}_c`].splice(0, 1);
-      const fromU = fromC.length ? [] : buckets[`${resLevel}_u`].splice(0, 1);
-      const taken = fromC.length ? fromC : fromU;
-      if (!taken.length) break;
-      standardResult.push(...taken);
-      need--;
-    }
-  }
-
-  const quotaOverflow = [];
-  for (const key of Object.keys(buckets)) {
-    if (buckets[key].length > 0) quotaOverflow.push(...buckets[key]);
-  }
-
-  // VIP always first in line, capped; then confirmed Hebrew same-title matches
-  const cappedVipStreams = vipStreams.slice(0, MAX_VIP_SLOTS);
-  hebrewMatches.sort(masterSortFunc);
-  const cappedHebrew = hebrewMatches.slice(0, MAX_HEBREW_RESERVE);
-  const hebrewOverflow = hebrewMatches.slice(MAX_HEBREW_RESERVE);
-
-  let finalCandidates = [...cappedVipStreams, ...cappedHebrew, ...standardResult];
-  let missingSlots = maxResults - finalCandidates.length;
-
-  if (missingSlots > 0 && hebrewOverflow.length > 0) {
-    const taken = hebrewOverflow.slice(0, missingSlots);
-    finalCandidates.push(...taken);
-    missingSlots -= taken.length;
-  }
-  if (missingSlots > 0 && quotaOverflow.length > 0) {
-    const taken = quotaOverflow.slice(0, missingSlots);
-    finalCandidates.push(...taken);
-    missingSlots -= taken.length;
-  }
-
-  finalCandidates.sort(masterSortFunc);
-
-  // Reserve uncached 4K / uncached 1080p / Direct Web slots
-  // Big profiles: 3 each; light/family: 1 each
-  const resCount = isBigProfile ? 3 : 1;
-
-  const nonVipStreams = finalCandidates.filter(s => !isVIPSource(s) && !s._hebrewMatch);
-
-  const poolDirectWeb = [];
-  const poolUncached4K = [];
-  const poolUncached1080p = [];
-  const poolMain = [];
-
-  for (const stream of nonVipStreams) {
-    if (isDirectWebStream(stream)) {
-      poolDirectWeb.push(stream);
-    } else if (!isCached(stream)) {
-      const resWeight = getResWeight(stream);
-      if (resWeight === 4) poolUncached4K.push(stream);
-      else if (resWeight === 3) poolUncached1080p.push(stream);
-      else poolMain.push(stream);
-    } else {
-      poolMain.push(stream);
-    }
-  }
-
-  poolUncached4K.sort(masterSortFunc);
-  poolUncached1080p.sort(masterSortFunc);
-  poolDirectWeb.sort(masterSortFunc);
-
-  const reservedU4K = poolUncached4K.splice(0, resCount);
-  const reservedU1080p = poolUncached1080p.splice(0, resCount);
-  const reservedDirectWeb = poolDirectWeb.splice(0, resCount);
-
-  console.log(
-    `[ESAY QUOTA] profile=${profileConfig} vip=${cappedVipStreams.length}/${MAX_VIP_SLOTS}` +
-    ` hebrew=${cappedHebrew.length}/${MAX_HEBREW_RESERVE}` +
-    ` reserve U4K=${reservedU4K.length} U1080=${reservedU1080p.length} web=${reservedDirectWeb.length}`
-  );
-
-  const restToFill = [...poolMain, ...poolUncached4K, ...poolUncached1080p, ...poolDirectWeb];
-  restToFill.sort(masterSortFunc);
-
-  const currentReservedCount = reservedU4K.length + reservedU1080p.length + reservedDirectWeb.length;
-  const remainingSlots = Math.max(
-    0,
-    maxResults - cappedVipStreams.length - cappedHebrew.length - currentReservedCount
-  );
-  const standardFill = restToFill.slice(0, remainingSlots);
-
-  const combinedStandardAndUncached = [...standardFill, ...reservedU4K, ...reservedU1080p];
-  combinedStandardAndUncached.sort(masterSortFunc);
-
-  // VIP first, then confirmed Hebrew same-title, then quality fill
-  return [...cappedVipStreams, ...cappedHebrew, ...combinedStandardAndUncached, ...reservedDirectWeb];
+/** Client classes that can handle demanding codecs/containers without transcode. */
+function isCapableClient(ua) {
+  const u = (ua || '').toLowerCase();
+  return u.includes('nuvio') || u.includes('libmpv') || u.includes('kodi');
 }
-
-// Maps our internal resolution weight to the short label the user sees next to the provider name
-const RES_LABELS = { 4: '4K', 3: 'FHD', 2: 'HD', 1: 'SD', 0: 'SD' };
 
 /**
  * Providers pack extra info into `name` besides their own brand, e.g.
- * "[RD⚡] Comet 1080p" (Comet), "MediaFusion RD 2160p ⚡️" (MediaFusion),
- * "Torrentio\n4k" (Torrentio). After stripping known debrid/uncached tags,
- * the brand is reliably the first real word — keep just that.
+ * "[RD⚡] Comet 1080p" or "Torrentio\n4k". After stripping delivery tags the
+ * brand is reliably the first real word.
  */
 function extractProviderName(rawName, fallback) {
   const cleaned = String(rawName || '')
     .replace(REGEX_BRACKETS, '').replace(REGEX_PARENS, '').replace(REGEX_DOWNLOAD, '')
     .replace(/\n+/g, ' ').replace(/[|·•]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
-  const tokens = cleaned.split(/\s+/).filter(Boolean);
-  for (const token of tokens) {
+  for (const token of cleaned.split(/\s+/).filter(Boolean)) {
     const word = token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
     if (word) return word;
   }
   return fallback;
 }
 
-function formatForStremio(streams) {
-  return streams.map((stream, index) => {
-    const isVip = isVIPSource(stream);
-    const isC = isCached(stream);
-    const position = index + 1;
-    const isDirectWeb = isDirectWebStream(stream);
+/**
+ * Availability wording derived from the availability feature and transport, not
+ * from title text. The viewer sees a promise we can actually justify.
+ */
+function availabilityLabel(features) {
+  if (features.transport === TRANSPORT.DIRECT_OWNER) return 'זמין לצפייה';
+  if (features.cacheClaim?.claim === CACHE_CLAIM.POSITIVE) return 'זמין לצפייה';
+  if (features.F >= 0.90) return 'זמין לצפייה';
+  if (features.transport === TRANSPORT.EXTERNAL) return 'נגן חיצוני';
+  if (features.cacheClaim?.claim === CACHE_CLAIM.QUEUED) return 'דורש המתנה ואולי כניסה חוזרת';
+  if (features.transport === TRANSPORT.P2P) return 'תלוי במהירות הרשת';
+  return 'דורש המתנה ואולי כניסה חוזרת';
+}
 
-    const providerName = extractProviderName(stream.name, 'מקור');
-    const resLabel = RES_LABELS[getResWeight(stream)] ?? 'SD';
-    const cleanName = `${providerName} ${resLabel}`;
+/** Internal analysis fields that must never reach the client. */
+const INTERNAL_KEYS = [
+  '_sourceBaseUrl', '_provenance', '_text', '_sizeGB', '_effectiveSizeGB', '_isEpisodeQuery',
+  '_isCached', '_isUsenet', '_isVip', '_isNotice', '_seeders', '_resWeight', '_qualityWeight',
+  '_visualWeight', '_audioWeight', '_langWeight', '_weightTier', '_releaseYear',
+  '_fakeHdrPenalized', '_upscalePenalized', '_oldHdrCaution', '_fakeQuality',
+  '_fakeResContradiction', '_isSeasonPack', '_hebrewMatch', '_titleMatched',
+  '_score', '_features', '_scoreBreakdown', '_clusterId', '_clusterSize',
+];
 
-    let rawTitle = stream.title || stream.description || stream.behaviorHints?.filename || '';
-    let cleanTitle = rawTitle.replace(REGEX_DOWNLOAD, '').replace(/\n+/g, '\n').trim();
+/**
+ * Shape selected candidates into Stremio stream objects.
+ *
+ * Playback-relevant behaviorHints (`filename`, `videoSize`, `videoHash`) are
+ * preserved on purpose: clients echo them back on subtitle requests, which is how
+ * auto-sync identifies the file being played.
+ */
+function formatForStremio(selected) {
+  return selected.map((candidate, index) => {
+    const stream = candidate.stream;
+    const features = candidate.features;
+    const providerName = extractProviderName(stream.name, features.provider.label || 'מקור');
+    const resLabel = RES_LABELS[features.release.resolution.value] ?? '';
+    const cleanName = resLabel ? `${providerName} ${resLabel}` : providerName;
+
+    const rawTitle = stream.title || stream.description || stream.behaviorHints?.filename || '';
+    let cleanTitle = String(rawTitle).replace(REGEX_DOWNLOAD, '').replace(/\n+/g, '\n').trim();
     if (!cleanTitle) cleanTitle = cleanName || 'תוצאה ללא כותרת מהמקור';
 
-    // Real cache/direct-web status wins over the VIP flag: a VIP-branded (Telegram/Your
-    // Media/usenet-library) stream that is genuinely cached or a plain HTTP link should
-    // say so accurately, not be blanket-labeled "מרשת דפדפן" just because it's VIP.
-    // VIP only forces the "מרשת דפדפן" label when neither of those signals fired
-    // (e.g. Kan-Box/AnimeIL host links with no detectable cache markers).
-    let prefix = isDirectWeb ? 'מרשת דפדפן' : (isC ? 'זמין לצפייה' : (isVip ? 'מרשת דפדפן' : 'דורש המתנה ואולי כניסה חוזרת'));
-    if (stream.behaviorHints && stream.behaviorHints.notWebReady) {
-      prefix += ' (לנגן תומך)';
-    }
-    
-    stream.name = `[#${position}] ${prefix} | ${cleanName}`;
+    let prefix = availabilityLabel(features);
+    if (stream.behaviorHints?.notWebReady) prefix += ' (לנגן תומך)';
+
+    stream.name = `[#${index + 1}] ${prefix} | ${cleanName}`;
     stream.title = cleanTitle;
 
     if (stream.behaviorHints) {
@@ -238,54 +102,57 @@ function formatForStremio(streams) {
       delete stream.behaviorHints.bingeGroup;
     }
     delete stream.description;
-
-    const keysToDelete = [
-      '_sourceBaseUrl', '_text', '_sizeGB', '_effectiveSizeGB', '_isEpisodeQuery', '_isCached', '_isUsenet',
-      '_isVip', '_isNotice', '_seeders', '_resWeight', '_qualityWeight',
-      '_visualWeight', '_audioWeight', '_langWeight', '_weightTier',
-      '_releaseYear', '_fakeHdrPenalized', '_upscalePenalized', '_isSeasonPack',
-      '_hebrewMatch', '_titleMatched'
-    ];
-    keysToDelete.forEach(k => delete stream[k]);
+    for (const key of INTERNAL_KEYS) delete stream[key];
     return stream;
   });
 }
 
-function logDiagnostics(finalSliced) {
-  console.log(`\n[ESAY DIAGNOSTIC] 📊 רשימת ה-${finalSliced.length} הסופית שנשלחת לסטרימיו:`);
-  const hashTracker = new Set();
-  let invisibleDrops = 0;
+/**
+ * Operator-facing explanation of the final list. Every row can be justified by
+ * its dominant score contributions, which is the point of a weighted model.
+ */
+function logRankingDiagnostics(selected, diagnostics, profile) {
+  console.log(
+    `\n[ESAY RANK] 📊 profile=${diagnostics.profile} model=${diagnostics.modelVersion}` +
+    ` trust=${diagnostics.trustSnapshotVersion} raw=${diagnostics.rawCount}` +
+    ` eligible=${diagnostics.eligibleCount} clusters=${diagnostics.dedup.clusters}` +
+    ` merged=${diagnostics.dedup.merged} (${diagnostics.dedup.mode})` +
+    ` selected=${diagnostics.selection.selected} vip=${diagnostics.selection.vip}` +
+    ` relaxed=${diagnostics.selection.relaxed}` +
+    ` | features=${diagnostics.timings.featureMs}ms dedup=${diagnostics.timings.dedupMs}ms` +
+    ` select=${diagnostics.timings.selectMs}ms`
+  );
 
-  finalSliced.forEach((s, index) => {
-    const statusTag = s.name.includes('זמין לצפייה') ? '🟩 CACHED ' : (s.name.includes('דפדפן') ? '🟪 VIP/WEB ' : '🟥 UNCACHED');
-    let linkType = 'UNKNOWN';
-    if (s.url) linkType = 'URL';
-    else if (s.infoHash) linkType = `HASH:${s.infoHash.substring(0, 8)}...`;
-    else if (s.externalUrl) linkType = 'EXTERNAL';
-
-    let warning = '';
-    if (s.infoHash) {
-      const normalizedHash = s.infoHash.toLowerCase();
-      if (hashTracker.has(normalizedHash)) {
-        warning = ' ⚠️ [STREMIO WILL HIDE THIS - DUPLICATE HASH]';
-        invisibleDrops++;
-      }
-      hashTracker.add(normalizedHash);
+  const hashSeen = new Set();
+  let duplicateHashes = 0;
+  selected.forEach((candidate, index) => {
+    const features = candidate.features;
+    const breakdown = scoreBreakdown(features, profile);
+    const top = Object.entries(breakdown)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([key, value]) => `${key}=${value.toFixed(1)}`)
+      .join(' ');
+    const hash = String(candidate.stream.infoHash || '').toLowerCase();
+    if (hash) {
+      if (hashSeen.has(hash)) duplicateHashes++;
+      hashSeen.add(hash);
     }
-
-    const displayTitle = (s.title || '').replace(/\n/g, ' ').substring(0, 60);
-    console.log(`[#${index + 1}] | ${statusTag} | ${linkType} | ${displayTitle}${warning}`);
+    console.log(
+      `[#${index + 1}] score=${candidate.baseScore.toFixed(2)}` +
+      ` ${features.isVip ? 'VIP ' : ''}${features.transport}` +
+      ` F=${features.F.toFixed(2)} T=${features.T.toFixed(2)} V=${features.V.toFixed(2)}` +
+      ` C=${features.C.toFixed(2)} | ${top}` +
+      ` | ${features.explanation.availability}` +
+      (candidate.clusterSize > 1 ? ` | merged=${candidate.clusterSize}` : '') +
+      ` | ${String(candidate.stream.title || '').replace(/\n/g, ' ').slice(0, 60)}`
+    );
   });
 
-  if (invisibleDrops > 0) {
-    console.log(`[ESAY DIAGNOSTIC] 🚨 אזהרה: יש ${invisibleDrops} כפילויות InfoHash ברשימה! סטרימיו יציג בפועל רק ${finalSliced.length - invisibleDrops} תוצאות.`);
+  if (duplicateHashes > 0) {
+    console.log(`[ESAY RANK] 🚨 ${duplicateHashes} duplicate infoHash rows survived dedup — Stremio will hide them.`);
   }
-  console.log(`[ESAY DIAGNOSTIC] 🏁 סיום מוצלח. נשלחו ${finalSliced.length} תוצאות.\n--------------------------------------------------\n`);
-}
-
-function isCapableClient(ua) {
-  const u = (ua || '').toLowerCase();
-  return u.includes('nuvio') || u.includes('libmpv') || u.includes('kodi');
+  console.log(`[ESAY RANK] 🏁 sent ${selected.length} streams.\n`);
 }
 
 export default async function handler(req, res) {
@@ -310,21 +177,16 @@ export default async function handler(req, res) {
     if (rawIdWithExt.includes('%')) rawIdWithExt = decodeURIComponent(rawIdWithExt);
     const idWithExt = rawIdWithExt;
 
-    // === בלוק השכמה (Pre-warming) לשרתים חינמיים "נרדמים" בלבד ===
+    // Wake free-tier subtitle hosts that sleep, so the later subtitle request is warm.
     if (type === 'movie' || type === 'series' || type === 'anime') {
       const sleepyAddons = [
         `https://submaker.elfhosted.com/addon/6c38c5872b2797b33729f954a9d1c5f7/subtitles/${type}/${idWithExt}`,
-        `https://pgssubtitle.onrender.com/subtitles/${type}/${idWithExt}`
+        `https://pgssubtitle.onrender.com/subtitles/${type}/${idWithExt}`,
       ];
-      
-      sleepyAddons.forEach(url => {
-        // Fire and Forget
-        fetch(url).catch(() => {});
-      });
-      console.log(`[ESAY WAKEUP] ⏰ נשלחו פינגים להשכמת שרתים (Render + Elfhosted) עבור סוג ${type} | מזהה: ${idWithExt}`);
+      sleepyAddons.forEach(url => { fetch(url).catch(() => {}); });
+      console.log(`[ESAY WAKEUP] ⏰ נשלחו פינגים להשכמת שרתים עבור סוג ${type} | מזהה: ${idWithExt}`);
     }
-    // ============================================
-    
+
     if (type === 'tv' || type === 'channel') {
       const tvAddonUrl = process.env.TV_ADDON_URL;
       if (!tvAddonUrl) return res.status(200).json({ streams: [] });
@@ -340,18 +202,15 @@ export default async function handler(req, res) {
         } finally {
           clearTimeout(timeoutId);
         }
-        if (tvRes.ok) {
-          const tvData = await tvRes.json();
-          return res.status(200).json(tvData);
-        }
+        if (tvRes.ok) return res.status(200).json(await tvRes.json());
       } catch (e) {
         console.error(`[ESAY DIAGNOSTIC] 💥 שגיאה בשליפת ערוץ חי: ${e.message}`);
       }
       return res.status(200).json({ streams: [] });
     }
 
-    // Yastream Asian provider ids (kisskh: / idrama: / onetouchtv:) — proxy only to Yastream.
-    // Normal tt titles still fan out to all ADDON_URLS (including Yastream) below.
+    // Yastream Asian provider ids proxy straight through; normal tt titles still
+    // fan out to every configured addon below.
     const idNoExt = idWithExt.replace(/\.json$/i, '');
     if (isYastreamProviderId(idNoExt)) {
       const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
@@ -384,22 +243,27 @@ export default async function handler(req, res) {
     }
 
     const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
-    const profileConfig = configs[userKey]?.profile || 'friends_light';
-    const profile = { ...(PROFILES[profileConfig] || PROFILES.friends_light) };
+    const profileName = configs[userKey]?.profile || DEFAULT_PROFILE;
+    const baseProfile = resolveProfile(profileName);
     const addons = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
-
-    // Capable clients (Nuvio etc.) get the full near-ceiling budget even on light profiles
-    if (isCapableClient(clientUA) && profile.timeoutMs < 9500) {
-      console.log(`[ESAY STREAM] 🚀 Capable client detected (${clientUA.substring(0, 40)}) → timeout 9500ms`);
-      profile.timeoutMs = 9500;
-    }
-
     if (addons.length === 0) return res.status(200).json({ streams: [] });
 
-    // ID resolve is opt-in and must not delay the base tt + text fan-out.
-    // - flags off: identical to pre-mapping (no promise)
-    // - shadow only: fire-and-forget log; engine path unchanged
-    // - query on: start resolve now; engine awaits it in parallel with getContentMeta
+    // Capable clients decode more formats, so device compatibility stops being a
+    // constraint and they can use the wider collection window.
+    const capable = isCapableClient(clientUA);
+    const profile = capable
+      ? {
+        ...baseProfile,
+        clientClass: 'capable',
+        timeoutMs: Math.max(baseProfile.timeoutMs, 9500),
+        collectionCutoffMs: Math.max(baseProfile.collectionCutoffMs, 7000),
+      }
+      : baseProfile;
+    if (capable) {
+      console.log(`[ESAY STREAM] 🚀 Capable client (${clientUA.substring(0, 40)}) → capable compatibility profile`);
+    }
+
+    // ID resolve stays opt-in and never delays the base fan-out.
     let idResolvePromise = null;
     if (isIdResolveEnabled()) {
       if (isIdResolveQueryEnabled()) {
@@ -411,27 +275,33 @@ export default async function handler(req, res) {
       }
     }
 
-    const engineContext = {
-      timeoutMs: profile.timeoutMs,
-      maxSizeGB: profile.maxSizeGB,
-      minSeedersUncached: profile.minSeedersUncached,
-      maxResults: profile.maxResults,
+    const result = await retrieveRankAndSelect(type, idWithExt, {
+      profile,
+      profileName,
       addons,
       clientUA,
       clientIp,
       queryHint: decodeURIComponent(req.url || ''),
       idResolvePromise,
-    };
+    });
 
-    const allValidStreams = await fetchAndSortStreams(type, idWithExt, engineContext);
-    const sliced = applyQuotasAndSlice(allValidStreams, profileConfig, profile.maxResults);
-    const finalSliced = formatForStremio(sliced);
+    logRankingDiagnostics(result.selected, result.diagnostics, profile);
 
-    logDiagnostics(finalSliced);
+    // Auxiliary writes are fire-and-forget: the response must not wait on them,
+    // and a Supabase outage must not change what the viewer sees.
+    upsertStreamSightings({
+      contentType: type,
+      contentId: idNoExt,
+      candidates: result.selected,
+    }).catch(() => {});
+    recordRankingAudits(result.selected, { contentId: idNoExt }).catch(() => {});
 
-    return res.status(200).json({ streams: finalSliced });
+    const finalStreams = formatForStremio(result.selected);
+    return res.status(200).json({ streams: finalStreams });
   } catch (error) {
     console.error('[ESAY DIAGNOSTIC] 💥 שגיאת קריסה כללית ב-Proxy:', error.stack || error);
     return res.status(200).json({ streams: [] });
   }
 }
+
+export { formatForStremio, availabilityLabel, extractProviderName, isCapableClient };

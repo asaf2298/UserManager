@@ -1,6 +1,7 @@
 import fetch from 'node-fetch';
 import { debugLog } from '../lib/debugLog.js';
 import { isYastreamProviderId, rewriteMetaToImdbIfKnown } from '../lib/yastream.js';
+import { resolveProvider, evaluateVip } from '../lib/providerCapabilities.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -154,9 +155,13 @@ async function getCachedManifest(baseUrl, headers) {
     }
 }
 
+/**
+ * VIP hosts are declared once in the provider capability registry, so adding a
+ * curated source no longer means editing hostname substrings in several files.
+ */
 function isVipSearchHost(url) {
-    const u = (url || '').toLowerCase();
-    return u.includes('kan-box-addon.vercel.app') || u.includes('animeil');
+    const provider = resolveProvider(url, { configured: true });
+    return evaluateVip(provider, { text: '', isSingleHopHttp: true, isIpLocked: false });
 }
 
 /**
