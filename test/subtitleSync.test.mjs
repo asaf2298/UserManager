@@ -7,6 +7,8 @@ import {
   pickHebrewSyncBases,
   buildSyncTrackDescriptors,
   hasKnownNoEmbeds,
+  canHideSyncForVideoKey,
+  slotReferencePool,
   rankEmbeddedTracks,
   trackNormality,
   SYNC_MESSAGES,
@@ -74,14 +76,51 @@ test('sync track injection advertises up to four stable URLs immediately', () =>
 
 test('hasKnownNoEmbeds fails open without Supabase', async () => {
   assert.equal(FAIL_REASON.NO_EMBEDS, 'no_embeds');
+  assert.equal(FAIL_REASON.TRY_OTHER_SYNC, 'try_other_sync');
   assert.equal(await hasKnownNoEmbeds('vh:abc'), false);
   assert.equal(await hasKnownNoEmbeds(''), false);
   assert.equal(await hasKnownNoEmbeds(null), false);
 });
 
+test('sync hide keys require strong identity or scoped fn', () => {
+  assert.equal(canHideSyncForVideoKey('vh:5553e4a4b9f7b1ea'), true);
+  assert.equal(canHideSyncForVideoKey('fs:abcdef0123456789abcdef01'), true);
+  assert.equal(canHideSyncForVideoKey('fn:abcdef0123456789abcdef01'), false);
+  assert.equal(canHideSyncForVideoKey('fn:abcdef0123456789abcdef01', 'tt0120737'), true);
+  assert.equal(canHideSyncForVideoKey('fn:abcdef0123456789abcdef01', null), false);
+});
+
+test('slotReferencePool asks viewer to try another sync when language missing', () => {
+  const tracks = [
+    { index: 0, isText: true, language: 'en', cueCount: 900 },
+    { index: 1, isText: true, language: 'en', cueCount: 40, isForced: true },
+  ];
+  const officialJa = slotReferencePool(tracks, {
+    slot: REFERENCE_SLOT.OFFICIAL,
+    officialLanguage: 'ja',
+  });
+  assert.equal(officialJa.tryOther, true);
+  assert.deepEqual(officialJa.tracks, []);
+
+  const english = slotReferencePool(tracks, {
+    slot: REFERENCE_SLOT.ENGLISH,
+    officialLanguage: 'ja',
+  });
+  assert.equal(english.tryOther, false);
+  assert.equal(english.tracks.length, 2);
+
+  const unlabeledOnly = slotReferencePool(
+    [{ index: 0, isText: true, language: null, cueCount: 500 }],
+    { slot: REFERENCE_SLOT.OFFICIAL, officialLanguage: 'ja' },
+  );
+  assert.equal(unlabeledOnly.tryOther, false);
+  assert.equal(unlabeledOnly.tracks.length, 1);
+});
+
 test('viewer-facing sync messages are exact and stable', () => {
   assert.equal(SYNC_MESSAGES.PENDING, 'please wait one minute and reselect to sync');
   assert.equal(SYNC_MESSAGES.NO_EMBEDS, 'no available embedded subtitles');
+  assert.equal(SYNC_MESSAGES.TRY_OTHER, 'try another sync subtitle');
   assert.equal(SYNC_MESSAGES.FAILED, 'sorry couldnt sync');
   const pending = buildOneCueSrt(SYNC_MESSAGES.PENDING);
   assert.match(pending, /please wait one minute and reselect to sync/);
