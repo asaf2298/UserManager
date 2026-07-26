@@ -12,6 +12,7 @@ export const COMET = 'https://comet.elfhosted.com/cfg111111111111111111111111';
 export const MEDIAFUSION = 'https://mediafusion.elfhosted.com';
 export const YASTREAM = 'https://yastream.example.net';
 export const KANBOX = 'https://kan-box-addon.vercel.app';
+export const PERSONAL_TELEGRAM = 'https://advantage-shot-petition-crucial.trycloudflare.com/As123456';
 export const KNABEN = 'https://knaben.example.org';
 export const UNKNOWN_HOST = 'https://random-indexer.example.com';
 
@@ -92,14 +93,21 @@ export const vipKanBox = withSource({
   url: 'https://kan-box-addon.vercel.app/play/il_12345.m3u8',
 }, KANBOX);
 
-/** MediaFusion Telegram library entry: VIP only via this family's structured rule. */
+/** Personal Telegram addon: VIP via host-authoritative registry entry. */
+export const vipPersonalTelegram = withSource({
+  name: 'Personal Telegram',
+  title: 'Dune Part Two 2024 1080p WEB-DL x264',
+  url: 'https://advantage-shot-petition-crucial.trycloudflare.com/stream/tgfile_abc123.mkv',
+}, PERSONAL_TELEGRAM);
+
+/** MediaFusion telegram_bot title is not VIP without a host-authoritative provider. */
 export const vipTelegram = withSource({
   name: 'MediaFusion',
   title: 'telegram_bot | Dune Part Two 2024 1080p WEB-DL x264',
   url: 'https://mediafusion.elfhosted.com/stream/direct/999.mkv',
 }, MEDIAFUSION);
 
-/** telegram_bot prefix on a direct HTTP link is VIP on any host. */
+/** Same "telegram_bot" text from an unknown host must NOT become VIP. */
 export const fakeVipUnknownHost = withSource({
   name: 'Random Indexer',
   title: 'telegram_bot your media Dune Part Two 2024 1080p WEB-DL',
@@ -191,6 +199,6 @@ export const BREAKING_BAD_TITLES = ['Breaking Bad'];
 /** Everything except the intentionally-broken rows. */
 export const MOVIE_SET = [
   cachedRemux4k, cachedRemux4kDuplicate, fake4k, upscaled, uncachedHealthyP2P,
-  uncachedDeadP2P, queuedDebrid, vipKanBox, vipTelegram, fakeVipUnknownHost,
+  uncachedDeadP2P, queuedDebrid, vipKanBox, vipPersonalTelegram, vipTelegram, fakeVipUnknownHost,
   hebrewRelease, camRip, externalOnly,
 ];
