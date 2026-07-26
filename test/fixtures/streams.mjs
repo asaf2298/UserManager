@@ -99,7 +99,7 @@ export const vipTelegram = withSource({
   url: 'https://mediafusion.elfhosted.com/stream/direct/999.mkv',
 }, MEDIAFUSION);
 
-/** Same "telegram_bot" text from an unknown host must NOT become VIP. */
+/** telegram_bot prefix on a direct HTTP link is VIP on any host. */
 export const fakeVipUnknownHost = withSource({
   name: 'Random Indexer',
   title: 'telegram_bot your media Dune Part Two 2024 1080p WEB-DL',
