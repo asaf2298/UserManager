@@ -1,6 +1,6 @@
 # UserManager-Stremio (Vecret / Personal Proxy)
 
-Vecret (**Personal**, formerly Esay) is a serverless proxy and aggregator for **Stremio and Kodi** addons, built for **Vercel Serverless Functions**. It fans out to multiple upstream addons in parallel, then filters, pre-sorts, deduplicates, and quota-slices streams and subtitles into a fast, profile-aware response.
+Vecret (**Personal**, formerly Esay) is a serverless proxy and aggregator for **Stremio and Kodi** addons, built for **Vercel Serverless Functions**. It fans out to multiple upstream addons in parallel, then runs a deterministic **retrieve → parse → feature → exact dedup → profile score → constrained select** pipeline for streams, plus mathematical subtitle ranking and optional embedded-only auto-sync.
 
 Stremio install name: **`Personal - {name}`** (from `USER_CONFIGS`).
 
@@ -10,53 +10,30 @@ Current manifest version: **2.11.0**.
 
 ## Key Features
 
-### Smart two-phase stream timeout
-* Fans out to all stream addons in parallel (IMDb/TMDB id + primary title `search=`).
-* Waits an initial **5.5s** burst (`INITIAL_WAIT_MS`), then uses the remaining profile budget (up to **9.5s** on `everything` / `friends_heavy`, and for capable clients like Nuvio/Kodi).
-* **Early-stop:** if the finalized list already fills `maxResults`, returns after the burst without waiting out the full timeout.
-* **Multi-language text-search backup** (English / Hebrew / Russian / original title) runs **sequentially and only if** the primary fan-out is still thin or VIP hosts returned nothing.
-* If the request hints at dubbed content (`דיבוב` / `מדובב`), Hebrew titles are preferred for text search.
+### Deterministic stream ranking (`rank-v2.0`)
+* Latency-bounded retrieval with provenance stamps (provider, query mode, latency). Parallel completion order never affects rank.
+* Collection cutoffs: **7000ms** for `everything` / `friends_heavy` / Kodi; **5500ms** for `friends_light` / `family`. At least **1500ms** reserved for ranking and serialization. No count-only early stop.
+* Provider capability registry owns cache markers, VIP rules, and trust priors. Generic title text cannot mint cache or VIP status.
+* Canonical release parser emits typed fields with `parsed` / `unknown` / `conflict` states. Missing metadata is uncertainty; contradictions reduce credibility.
+* Exact Jaccard dedup is authoritative; MinHash/LSH only proposes pairs above **250** candidates.
+* One weighted score per profile (`BaseScore = C * Σ wᵢ·fᵢ`, weights sum to 100). Features: availability `F`, trust `T`, match `X`, visual `V`, device `D`, audio `A`, HDR `H`, size plausibility `Z`, metadata `M`, language `L`.
+* Constrained diverse selection with soft diversity penalties and hard caps. **VIP ≤ 2**, always first, never relaxed.
+* TorBox is audit evidence only (worker `checkcached`). Missing clicks are not failures. Request-time ranking reads immutable trust snapshots or static priors.
 
-### Pre-sort + bucket quotas (`drawWithOverflow`)
-* Pre-sorts by resolution, source quality, size tier, visual (HDR family), and audio.
-* Splits VIP sources (Kan-Box / AnimeIL / Telegram / Your Media) from standard streams.
-* Buckets standard streams into `4K|1080p|720p|SD` × `Cached|Uncached`.
-* **`drawWithOverflow`:** fill Cached quota first; missing Cached slots borrow from Uncached; leftover Cached can backfill Uncached shortage. Order: 4K → 1080p → 720p → SD.
-* Enforces a **minimum of 2 items per resolution** when available.
-* VIP capped at **3**, always listed first.
-* Reserved slots after quotas:
-  * `everything` / `friends_heavy`: up to **3** Uncached 4K, **3** Uncached 1080p, **3** Direct Web
-  * `friends_light` / `family`: **1** of each
-* Episode queries drop oversized **season-pack** rows when the non-pack list already fills `maxResults`.
-* **Soft title filter:** drops clear wrong-show matches (e.g. Utena on a Re:Zero request); borderline rows can be re-admitted only when the list is thin.
-* Up to **2** confirmed Hebrew same-title slots are reserved in the quota (HEB tags or Hebrew-letter release names matched via `meta.he`).
-* With `ID_RESOLVE_MAX_ALIAS_SEARCHES=2`, a 2nd anime synonym search runs only after the 5.5s burst when results are still thin.
-
-### Dynamic Hebrew stream tags
-* `זמין לצפייה` — Cached / Debrid-ready
-* `דורש המתנה ואולי כניסה חוזרת` — Uncached torrent (needs download)
-* `מרשת דפדפן` — Direct HTTP / VIP web
+### Availability wording (Hebrew tags)
+* `זמין לצפייה` — confirmed ready (direct-owner or cache-positive debrid)
+* `דורש המתנה ואולי כניסה חוזרת` — queued debrid / pure P2P
+* `מרשת דפדפן` — direct HTTP / VIP web
 * `(לנגן תומך)` — appended when `notWebReady` (HEVC / advanced codecs)
-
-### Uncached detection (MediaFusion & friends)
-Streams are forced into the Uncached bucket when titles/ids contain signals such as:
-`⏳` `⌛` `uncached` / `un-cached` / `not cached`, `⬇️` / `download` / `downloading`, `download to debrid`, `to debrid`, `instant=false`, `cached:no`, `[DL]`, etc. (spaces / hyphens / underscores optional).
-
-Bracket debrid tags: `[TB+]` / `[RD⚡]` (and similar) mean **cached**; bare `[TB]` / `[RD]` mean **uncached**.
 
 ### Notice / fake-stream filter
 Non-playable “notice” rows from upstreams are dropped (Yuki `[YS INFO]` / `[YS NOTICE]`, Pengu donate/sign-in, Comet sync/metadata errors, Einthusan-style “no results”, etc.).
 
-### Fake HDR / upscale penalties
-True HDR/DV/HLG tags still boost visual score. Self-declared AI/upscales and contradictory “fake quality” claims are penalized. Pre-**2015** titles with HDR tags get a mild caution nudge.
-
-### Smart subtitles
-* Dynamic race: at **6s**, cut early if ≥3 Hebrew subs; otherwise extend to **9s**.
-* Language allowlist (he / en / ru). Unknown langs are dropped — **honest empty beats fake Hebrew**.
-* Provider “Hebrew” tracks are sniffed for real Hebrew script; mislabeled English/etc. are dropped.
-* **Duration matching (±5%):** compares subtitle duration to TMDB/Cinemeta runtime. Matches get a large bonus.
-* Display titles include provider (`Personal Sub`), score (`★N`), and sync/duration hints.
-* All subtitle URLs are routed through `/api/sub-proxy` as **UTF-8**.
+### Smart subtitles + embedded auto-sync
+* Continuous subtitle score: release Jaccard, source/group/resolution/duration compatibility, within-request provider percentile.
+* Language ordering remains Hebrew → English → Russian. Auto-generated tracks stay visible but sort after human tracks and are excluded as sync bases.
+* Up to four immediate `סנכרן כתבויות` tracks (2 Hebrew bases × official / English reference slots). Selection starts work; pending returns a one-cue wait SRT; ready returns the full alass-aligned SRT at the same URL.
+* Embedded text references only (no audio / Whisper / `ffsubsync` / `offsetMs`). Worker yields on Telegram `personal_host_busy`; TorBox playback does not block sync.
 
 ### Israeli catalogs (Kan-Box)
 All Kan-Box catalogs are advertised in the Personal manifest:
@@ -100,6 +77,11 @@ Optional override: `YASTREAM_URL` if you need an explicit base outside `ADDON_UR
 | `TMDB_API_KEY` | TMDB v3 API key (titles, year, runtime) | `KEY...` |
 | `USER_CONFIGS` | JSON map of user keys → profile / name | *(see below)* |
 | `YASTREAM_URL` | Optional explicit Yastream base | *(usually omit; use `ADDON_URLS`)* |
+| `SUPABASE_URL` | Supabase project URL (ID resolve + ranking/sync tables) | — |
+| `SUPABASE_ANON_KEY` | Read-only resolver key (`personal_titles` SELECT) | — |
+| `SUPABASE_SERVICE_ROLE_KEY` | **Server-only**: ingest, sightings, audit queue, sync jobs | — |
+
+`TORBOX_API_TOKEN` belongs on the **media-intelligence worker only** — never on Vercel and never in client URLs.
 
 ### ID mapping (opt-in, Supabase)
 
@@ -107,9 +89,6 @@ Cross-provider ID resolution for anime (and later K-drama/soap). **Disabled by d
 
 | Variable | Role | Default |
 | --- | --- | --- |
-| `SUPABASE_URL` | Supabase project URL | — |
-| `SUPABASE_ANON_KEY` | Read-only resolver key (`personal_titles` SELECT) | — |
-| `SUPABASE_SERVICE_ROLE_KEY` | Ingest scripts only (`scripts/ingest-fribb.mjs`) | — |
 | `ID_RESOLVE_ENABLED` | Query Supabase on stream requests | `false` |
 | `ID_RESOLVE_SHADOW` | Log `[ID-RESOLVE][SHADOW]` plans without changing queries | `false` |
 | `ID_RESOLVE_QUERY` | Phase 2: additive `mal:` / `kitsu:` fan-out (never replaces `tt`) | `false` |
@@ -126,6 +105,8 @@ Cross-provider ID resolution for anime (and later K-drama/soap). **Disabled by d
 Fribb ingest (offline): `node --env-file=.env.local scripts/ingest-fribb.mjs` (imdb + MAL-only pool)  
 Manami aliases: `node scripts/generate-manami-batches.mjs` → `node scripts/ingest-manami-aliases.mjs`  
 AniBridge episode ingest: `node --env-file=.env.local scripts/ingest-anibridge.mjs`
+
+Media-intelligence schema: `supabase/migrations/20260726000000_media_intelligence.sql` (audit queue, observations, trust snapshots, stream sightings, subtitle sync jobs/cache, RLS). Apply only after approving the `personal_titles` SELECT policy + `personal_host_busy` RLS enablement.
 
 > Do **not** append `/manifest.json` to addon URLs in env vars.
 
@@ -153,16 +134,17 @@ User keys are taken from the **URL path** (`/<USER_KEY>/manifest.json`, `/<USER_
 
 ## User Profiles
 
-| Profile | maxResults | Size soft-cap | minSeeders (uncached) | timeoutMs | Quota set |
-| --- | --- | --- | --- | --- | --- |
-| `everything` | 30 | ∞ | 1 | **9500** | big (reserve 3/3/3) |
-| `friends_heavy` | 30 | ∞ | 3 | **9500** | big |
-| `friends_light` | 10 | **30GB movies / 10GB episodes** | 4 | 9000 | small (reserve 1/1/1) |
-| `family` | 10 | **30GB movies / 10GB episodes** | 4 | 9000 | small |
+| Profile | target | Size hard-cap | Collection cutoff | Emphasis |
+| --- | --- | --- | --- | --- |
+| `everything` | 30 | ∞ | **7000ms** | Technical quality (`V`/`A`/`H`) |
+| `friends_heavy` | 30 | ∞ | **7000ms** | Quality with mild readiness floor |
+| `friends_light` | 10 | **30GB movies / 10GB episodes** | **5500ms** | Immediate compatible playback |
+| `family` | 10 | **30GB movies / 10GB episodes** | **5500ms** | Ready + compatible; CAM banned |
+| Kodi | 100 | ∞ | **7000ms** | `friends_heavy` weights, capable client |
 
-If every stream exceeds the soft-cap, results are still returned (never leave the user with an empty list due to size alone).
+VIP output is **always ≤ 2** and listed first on every profile. Unknown size is never hard-dropped by the size cap.
 
-Capable clients (User-Agent containing `nuvio`, `kodi`, or `libmpv`) are bumped to **9500ms** even on light profiles.
+Capable clients (User-Agent containing `nuvio`, `kodi`, or `libmpv`) use the Kodi presentation path.
 
 ---
 
@@ -170,9 +152,10 @@ Capable clients (User-Agent containing `nuvio`, `kodi`, or `libmpv`) are bumped 
 
 ```bash
 node --env-file=.env.local dev-server.mjs   # http://localhost:3000
+node --test 'test/*.test.mjs'               # ranking / dedup / selector / sync contracts
 ```
 
-No hot reload — restart after editing `api/` or `lib/`. See `AGENTS.md` for cloud/egress notes (many public stream addons return 403 from datacenter IPs).
+No hot reload — restart after editing `api/` or `lib/`. See `AGENTS.md` for cloud/egress notes (many public stream addons return 403 from datacenter IPs) and the media-intelligence worker.
 
 ---
 
@@ -196,7 +179,7 @@ GET /api/kodi-catalog?userKey=my_secret_master_key&list=catalogs
 ## Diagnostics
 
 Watch Vercel **Logs** for tags such as:
-`[ESAY STREAM]`, `[ESAY SEARCH]`, `[ESAY QUOTA]`, `[ESAY SUBTITLES]`, `[ESAY SUB-PROXY]`, `[META HELPER]`, `[ESAY DIAGNOSTIC]`.
+`[ESAY STREAM]`, `[ESAY SEARCH]`, `[ID-RESOLVE]`, `[ESAY SUBTITLES]`, `[ESAY SUB-SYNC]`, `[ESAY SUB-PROXY]`, `[META HELPER]`.
 
 ---
 

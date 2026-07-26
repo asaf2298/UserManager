@@ -23,6 +23,34 @@ const TABLE = 'personal_host_busy';
 const READ_TIMEOUT_MS = 800;
 
 /**
+ * Pure lease evaluation. Exported so the busy/expired/missing cases stay covered
+ * without needing a live Supabase round-trip in unit tests.
+ *
+ * @param {object|null} row
+ * @param {number} [nowMs]
+ * @returns {{ busy:boolean, reason:string, activeStreams:number|null, until?:number }}
+ */
+export function evaluateHostBusyRow(row, nowMs = Date.now()) {
+  if (!row) return { busy: false, reason: 'no_lease_row', activeStreams: null };
+  if (!row.busy) return { busy: false, reason: 'not_busy', activeStreams: row.active_streams ?? null };
+
+  const until = row.busy_until ? Date.parse(row.busy_until) : NaN;
+  if (!Number.isFinite(until)) {
+    return { busy: false, reason: 'no_lease_expiry', activeStreams: row.active_streams ?? null };
+  }
+  if (until <= nowMs) {
+    return { busy: false, reason: 'lease_expired', activeStreams: row.active_streams ?? null };
+  }
+
+  return {
+    busy: true,
+    reason: `telegram_streaming:${row.source || 'unknown'}`,
+    activeStreams: row.active_streams ?? null,
+    until,
+  };
+}
+
+/**
  * @returns {Promise<{ busy:boolean, reason:string, activeStreams:number|null }>}
  */
 export async function isHostBusy() {
@@ -38,25 +66,8 @@ export async function isHostBusy() {
     // is a worker that never runs whenever the database hiccups.
     return { busy: false, reason: 'lease_unreadable', activeStreams: null };
   }
-  if (!rows.length) return { busy: false, reason: 'no_lease_row', activeStreams: null };
-
-  const row = rows[0];
-  if (!row.busy) return { busy: false, reason: 'not_busy', activeStreams: row.active_streams ?? null };
-
-  const until = row.busy_until ? Date.parse(row.busy_until) : NaN;
-  if (!Number.isFinite(until)) {
-    return { busy: false, reason: 'no_lease_expiry', activeStreams: row.active_streams ?? null };
-  }
-  if (until <= Date.now()) {
-    return { busy: false, reason: 'lease_expired', activeStreams: row.active_streams ?? null };
-  }
-
-  return {
-    busy: true,
-    reason: `telegram_streaming:${row.source || 'unknown'}`,
-    activeStreams: row.active_streams ?? null,
-    until,
-  };
+  if (!rows.length) return evaluateHostBusyRow(null);
+  return evaluateHostBusyRow(rows[0]);
 }
 
 /**
