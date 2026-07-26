@@ -21,9 +21,10 @@ Current manifest version: **2.11.0**.
 * TorBox is audit evidence only (worker `checkcached`). Missing clicks are not failures. Request-time ranking reads immutable trust snapshots or static priors.
 
 ### Availability wording (Hebrew tags)
-* `זמין לצפייה` — confirmed ready (direct-owner or cache-positive debrid)
-* `דורש המתנה ואולי כניסה חוזרת` — queued debrid / pure P2P
-* `מרשת דפדפן` — direct HTTP / VIP web
+* `זמין לצפייה` — confirmed ready (direct-owner URL, cache-positive debrid, or `F >= 0.90`)
+* `נגן חיצוני` — external player URL
+* `תלוי במהירות הרשת` — pure P2P (uncached torrent, seeder-dependent)
+* `דורש המתנה ואולי כניסה חוזרת` — queued debrid / other not-yet-ready state
 * `(לנגן תומך)` — appended when `notWebReady` (HEVC / advanced codecs)
 
 ### Notice / fake-stream filter

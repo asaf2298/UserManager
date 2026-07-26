@@ -58,6 +58,9 @@ export const LIMITS = {
   maxAttempts: 3,
   backoffMs: [60_000, 5 * 60_000, 30 * 60_000],
 
+  /** Audit-queue rows that keep failing (e.g. TorBox outage) stop looping after this many tries. */
+  maxQueueAttempts: 5,
+
   /** Temp disk ceiling for one job. */
   tempBudgetBytes: 512 * 1024 * 1024,
 

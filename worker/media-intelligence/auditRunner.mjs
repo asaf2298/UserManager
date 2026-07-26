@@ -66,13 +66,22 @@ export async function runAuditBatch() {
 
   if (!ok) {
     // No evidence: return the rows to the queue so a transient TorBox failure does
-    // not silently discard audit coverage.
-    await updateRows(
-      QUEUE_TABLE,
-      new URLSearchParams({ id: `in.(${batch.map(r => r.id).join(',')})` }),
-      { status: 'queued', attempts: undefined, last_error: String(error).slice(0, 200), updated_at: new Date().toISOString() },
-      2000,
-    );
+    // not silently discard audit coverage. Each row's own attempts count is bumped
+    // so a persistently failing hash eventually ages out via cleanup instead of
+    // looping through claimBatch forever.
+    for (const row of batch) {
+      await updateRows(
+        QUEUE_TABLE,
+        new URLSearchParams({ id: `eq.${row.id}` }),
+        {
+          status: (Number(row.attempts) || 0) + 1 >= LIMITS.maxQueueAttempts ? 'failed' : 'queued',
+          attempts: (Number(row.attempts) || 0) + 1,
+          last_error: String(error).slice(0, 200),
+          updated_at: new Date().toISOString(),
+        },
+        2000,
+      );
+    }
     return { ran: true, observations: 0, reason: 'torbox_unavailable' };
   }
 

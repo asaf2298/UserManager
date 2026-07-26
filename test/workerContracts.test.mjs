@@ -5,6 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gradeClaim } from '../worker/media-intelligence/auditRunner.mjs';
 import { evaluateHostBusyRow } from '../worker/media-intelligence/hostBusy.mjs';
+import { isCollectionThin } from '../lib/streamEngine.js';
 
 test('gradeClaim rewards truthful TorBox cache labels only', () => {
   assert.deepEqual(gradeClaim('cache_positive', true), { outcome: true, metric: 'cache_claim' });
@@ -45,4 +46,13 @@ test('host busy lease requires a live unexpired row', () => {
   assert.equal(live.busy, true);
   assert.equal(live.activeStreams, 2);
   assert.match(live.reason, /telegram_streaming:stream_file/);
+});
+
+test('deferred alias fan-out only fires when the collection is still thin', () => {
+  assert.equal(isCollectionThin(0), true);
+  assert.equal(isCollectionThin(5), true);
+  assert.equal(isCollectionThin(6), false);
+  assert.equal(isCollectionThin(40), false);
+  assert.equal(isCollectionThin(2, 10), true);
+  assert.equal(isCollectionThin(10, 10), false);
 });
