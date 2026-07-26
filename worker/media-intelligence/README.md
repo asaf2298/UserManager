@@ -1,0 +1,96 @@
+# Media worker
+
+Second service for the existing 1 CPU / 1 GB droplet that already runs the
+Telegram→Stremio addon. Three jobs, in priority order of cost:
+
+| Task | Cadence | Cost |
+| --- | --- | --- |
+| Subtitle alignment (`ffprobe` + `ffmpeg` + `alass`) | on demand, **one at a time** | heavy |
+| TorBox cache audits (`checkcached`) | at most 1 batch/min, ≤100 hashes | light |
+| Trust snapshot publication + TTL sweep | daily / hourly | light |
+
+## Host-busy contract
+
+The worker never competes with playback. The Telegram addon owns a lease row in
+`personal_host_busy`:
+
+| Signal | Owner | When |
+| --- | --- | --- |
+| busy ↑ | Telegram addon | first active byte-stream (refcount 0→1) |
+| busy ↓ | Telegram addon | last stream generator finishes / disconnects / errors |
+| heartbeat | Telegram addon | refresh `busy_until` ~every 30s while streaming |
+| consume | this worker | skip claiming, and abort + requeue mid-job |
+
+Busy means `busy = true AND busy_until > now()`. A missing row or an expired
+lease counts as free, so a crashed writer cannot deadlock the worker forever.
+
+A busy abort does **not** consume a retry attempt — yielding is not a failure.
+
+**TorBox/CDN playback does not set the lease** and therefore does not pause
+alignment. Those bytes never traverse this host, so there is no contention to
+avoid. This is intentional.
+
+## Environment
+
+```
+SUPABASE_URL=https://<project>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=…      # required: worker tables are service-role only
+TORBOX_API_TOKEN=…               # optional: without it, audits are skipped
+WORKER_ID=media-worker-1         # optional label used when claiming jobs
+HOST_BUSY_ID=default             # optional: lease row id
+```
+
+`TORBOX_API_TOKEN` must exist **only** here. It is never sent to a client and
+never stored in telemetry.
+
+## Run
+
+```bash
+# Docker (recommended: caps RAM so the Telegram addon always has headroom)
+docker build -f worker/media-intelligence/Dockerfile -t media-worker .
+docker run -d --name media-worker \
+  --memory 640m --cpus 0.8 \
+  --env-file /etc/media-worker.env \
+  --restart unless-stopped \
+  media-worker
+
+# Bare metal (needs ffmpeg + alass on PATH)
+node worker/media-intelligence/index.mjs
+```
+
+Verify the toolchain before first run:
+
+```bash
+ffprobe -version | head -1
+alass --help | head -1
+```
+
+## Alignment behavior
+
+- **Embedded text subtitles only.** No audio, Whisper, or `ffsubsync`.
+- Only the opening window (`WORKER_PROBE_WINDOW_SECONDS`, default 900s) is
+  downloaded, which is enough to establish offset and drift.
+- No text track is discarded. Forced, SDH, commentary, and signs tracks rank
+  lower but stay eligible — a forced track is still valid timing evidence when it
+  is the only match for the target language.
+- Bitmap subtitles (PGS/VobSub) are the single hard exclusion: `alass` needs text.
+- Reference slots are `official` (the production language from TMDB) and
+  `english`. If a file has one usable text track, the second slot reports
+  `no available embedded subtitles`.
+- Output is a rewritten SRT, not a global offset, so non-linear drift is corrected.
+
+## What TorBox is and is not used for
+
+TorBox has no "user clicked and playback succeeded" endpoint. `mylist` is account
+state and `requestdl` only proves a link can be issued. So TorBox is used purely
+as **audit evidence** for a falsifiable claim:
+
+| Observation | Meaning |
+| --- | --- |
+| provider said `cache_positive`, hash is cached | success |
+| provider said `cache_positive`, fresh check disagrees | failure |
+| provider said `queued`, hash is not cached | success (honest label) |
+| request failed / identity insufficient / non-TorBox claim | **no observation** |
+
+Missing clicks, URL-only streams, and absent audits never lower a provider's
+trust. Absence of evidence is not evidence of failure.

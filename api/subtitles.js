@@ -3,13 +3,15 @@ import http from 'http';
 import https from 'https';
 import { getContentMeta, buildSearchTitles, isDubbedQuery } from './search.js';
 import { parseSubtitleDurationMinutes, detectSubtitleScriptLang } from '../lib/subtitleUtils.js';
+import { parseRelease, jaccard, FIELD } from '../lib/releaseParser.js';
+import { buildVideoKey, parseVideoIdentityFromUrl } from '../lib/streamSighting.js';
+import { pickHebrewSyncBases, buildSyncTrackDescriptors } from '../lib/subtitleSync.js';
 
 const httpAgent = new http.Agent();
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 const dynamicAgent = (_parsedURL) => _parsedURL.protocol === 'http:' ? httpAgent : httpsAgent;
 
-/** Bonus when subtitle duration matches video duration within ±5% */
-const DURATION_MATCH_BONUS = 120;
+/** Duration agreement tolerance used by the Gaussian duration term. */
 const DURATION_MATCH_PCT = 0.05;
 
 async function fetchWithTimeout(url, options, timeoutMs) {
@@ -22,32 +24,87 @@ async function fetchWithTimeout(url, options, timeoutMs) {
     }
 }
 
-// === מנוע הניקוד החכם ===
-function calculateSmartScore(originalFilename, subId, baseScore) {
-    let score = Number(baseScore) || 0;
-    if (!originalFilename || !subId) return score;
+/**
+ * Compatibility of one release attribute between the video and the subtitle.
+ * Unknown is deliberately 0.5, not 0: a subtitle that simply does not state its
+ * source should not be ranked as though it stated a conflicting one.
+ */
+function attributeCompatibility(videoValue, subValue, videoState, subState) {
+    const known = videoState === FIELD.PARSED && subState === FIELD.PARSED;
+    if (!known) return 0.5;
+    return videoValue === subValue ? 1 : 0;
+}
 
-    const file = String(originalFilename).toLowerCase();
-    const sub = String(subId).toLowerCase();
+/** Gaussian agreement between subtitle runtime and video runtime. */
+function durationCompatibility(subMinutes, videoMinutes) {
+    if (!subMinutes || !videoMinutes || videoMinutes <= 0) return 0.5;
+    const deviation = Math.abs(subMinutes - videoMinutes) / videoMinutes;
+    return Math.exp(-0.5 * Math.pow(deviation / DURATION_MATCH_PCT, 2));
+}
 
-    // בונוסים על התאמת רזולוציה
-    if (file.includes('1080p') && sub.includes('1080p')) score += 30;
-    if ((file.includes('2160p') || file.includes('4k')) && (sub.includes('2160p') || sub.includes('4k'))) score += 30;
-    
-    // התאמות סוג מקור
-    if (file.includes('bluray') && sub.includes('bluray')) score += 50;
-    if (file.includes('web') && sub.includes('web')) score += 50;
-    
-    // התאמות קבוצות שחרור פופולריות
-    if (file.includes('yts') && sub.includes('yts')) score += 100;
-    if (file.includes('rarbg') && sub.includes('rarbg')) score += 100;
-    if (file.includes('tgx') && sub.includes('tgx')) score += 100;
+/**
+ * Continuous subtitle relevance score in [0,100].
+ *
+ * Replaces the old additive keyword bonuses, which were unbounded and let one
+ * lucky release-group substring outweigh every real timing signal. Provider
+ * popularity is reduced to a within-request percentile so a provider that reports
+ * download counts in the millions cannot dominate one that reports none.
+ */
+function calculateSubtitleScore({ videoRelease, subRelease, subDurationMin, videoRuntimeMin, providerPercentile }) {
+    const tokenSimilarity = videoRelease
+        ? jaccard(videoRelease.canonicalTokens, subRelease.canonicalTokens)
+        : 0.5;
 
-    // עונשים על חוסר סנכרון ודאי
-    if (file.includes('bluray') && sub.includes('web')) score -= 50;
-    if (file.includes('web') && sub.includes('bluray')) score -= 50;
+    const sourceCompat = videoRelease
+        ? attributeCompatibility(
+            videoRelease.source.family, subRelease.source.family,
+            videoRelease.source.state, subRelease.source.state,
+        )
+        : 0.5;
 
-    return score;
+    const groupCompat = videoRelease && videoRelease.releaseGroup && subRelease.releaseGroup
+        ? (videoRelease.releaseGroup === subRelease.releaseGroup ? 1 : 0)
+        : 0.5;
+
+    const resolutionCompat = videoRelease
+        ? attributeCompatibility(
+            videoRelease.resolution.value, subRelease.resolution.value,
+            videoRelease.resolution.state, subRelease.resolution.state,
+        )
+        : 0.5;
+
+    const durationCompat = durationCompatibility(subDurationMin, videoRuntimeMin);
+
+    return 100 * (
+        0.35 * tokenSimilarity +
+        0.20 * sourceCompat +
+        0.15 * groupCompat +
+        0.10 * resolutionCompat +
+        0.15 * durationCompat +
+        0.05 * providerPercentile
+    );
+}
+
+/**
+ * Log-normalized percentile of provider-reported popularity within this request.
+ * Cross-provider raw numbers are not comparable, so they are never used directly.
+ */
+function buildProviderPercentiles(values) {
+    const scaled = values
+        .map(v => Math.log1p(Math.max(0, Number(v) || 0)))
+        .filter(v => v > 0)
+        .sort((a, b) => a - b);
+    return (raw) => {
+        if (!scaled.length) return 0.5;
+        const value = Math.log1p(Math.max(0, Number(raw) || 0));
+        if (value <= 0) return 0;
+        let below = 0;
+        for (const entry of scaled) {
+            if (entry < value) below++;
+            else break;
+        }
+        return below / scaled.length;
+    };
 }
 
 /**
@@ -124,12 +181,17 @@ function isAllowedLang(rawLang) {
     return classifySubtitleLang(rawLang) != null;
 }
 
+function publicBaseUrl(req) {
+    const host = req.headers['x-forwarded-host'] || req.headers.host;
+    const proto = (req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim();
+    return host ? `${proto}://${host}` : null;
+}
+
 function buildProxyUrl(req, originalUrl) {
     try {
-        const host = req.headers['x-forwarded-host'] || req.headers.host;
-        const proto = (req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim();
-        if (!host) return originalUrl;
-        return `${proto}://${host}/api/sub-proxy?url=${encodeURIComponent(originalUrl)}`;
+        const base = publicBaseUrl(req);
+        if (!base) return originalUrl;
+        return `${base}/api/sub-proxy?url=${encodeURIComponent(originalUrl)}`;
     } catch {
         return originalUrl;
     }
@@ -158,17 +220,18 @@ export default async function handler(req, res) {
         if (fullQueryPath.includes('%')) fullQueryPath = decodeURIComponent(fullQueryPath);
         
         const id = remainingParts[0].replace('.json', '');
-        
-        // חילוץ שם הקובץ לטובת ציון הסנכרון
-        const urlParams = new URLSearchParams(req.url.split('?')[1] || '');
-        const extraParam = urlParams.get('extra') || '';
-        let originalFilename = '';
-        if (extraParam.includes('filename=')) {
-            const match = extraParam.match(/filename=([^&]+)/);
-            if (match) originalFilename = decodeURIComponent(match[1]);
-        }
 
-        console.log(`[ESAY SUBTITLES] 🔎 חולץ מזהה: ${id} | שם קובץ לסנכרון: ${originalFilename || 'לא נמצא'}`);
+        // Stremio sends playback identity as path extras on some clients and as
+        // query params on others; accept both so file matching works either way.
+        const videoIdentity = parseVideoIdentityFromUrl(req.url);
+        const originalFilename = videoIdentity.filename || '';
+        const videoKey = buildVideoKey({ ...videoIdentity, contentId: id });
+
+        console.log(
+            `[ESAY SUBTITLES] 🔎 מזהה: ${id} | קובץ: ${originalFilename || 'לא נמצא'}` +
+            ` | hash=${videoIdentity.videoHash || '-'} size=${videoIdentity.videoSize || '-'}` +
+            ` | videoKey=${videoKey || 'none'}`
+        );
         
         // סינון ספקים: חוסם את Submaker באופן אקטיבי כדי שלא יתקע את השרת
         const addonUrlsStr = process.env.SUBTITLE_URLS || '';
@@ -350,6 +413,16 @@ export default async function handler(req, res) {
             x.scriptLang = peek.scriptLang;
         }));
 
+        // The playing file's own release attributes are the comparison target for
+        // every subtitle. Parsed once so all candidates score against the same facts.
+        const videoRelease = originalFilename
+            ? parseRelease({ title: originalFilename, name: '' }, {})
+            : null;
+
+        const providerPercentile = buildProviderPercentiles(
+            withMeta.map(({ sub }) => sub.score || sub.SubRating || sub.rating || sub.downloads || 0)
+        );
+
         withMeta.forEach(({ sub, subDur, scriptLang }, index) => {
             const l = String(sub.lang || '').toLowerCase().trim();
             let lang = sub._classifiedLang || classifySubtitleLang(l);
@@ -365,91 +438,106 @@ export default async function handler(req, res) {
             }
             if (scriptLang === 'heb') lang = 'heb';
 
-            let displayType = '';
-            if (lang === 'heb' && (l.includes('make') || l.includes('submaker'))) {
-                displayType = ' [AI 🤖]';
-            }
+            const isAuto = (l.includes('make') || l.includes('submaker')) ? 1 : 0;
+            const displayType = (lang === 'heb' && isAuto) ? ' [AI 🤖]' : '';
 
             const subKey = `${sub.url}|${lang}`;
             if (seenSubs.has(subKey)) return;
             seenSubs.add(subKey);
 
-            const providerScore = Number(sub.score || sub.SubRating || sub.rating || sub.downloads || 0);
-            let smartScore = calculateSmartScore(originalFilename, sub.id, providerScore);
+            const subRelease = parseRelease(
+                { title: `${sub.title || ''} ${sub.id || ''}`, name: '' },
+                {},
+            );
+            const score = calculateSubtitleScore({
+                videoRelease,
+                subRelease,
+                subDurationMin: subDur,
+                videoRuntimeMin,
+                providerPercentile: providerPercentile(sub.score || sub.SubRating || sub.rating || sub.downloads || 0),
+            });
 
-            let durationMatch = false;
-            let deviationPct = null;
-            if (videoRuntimeMin && subDur) {
-                deviationPct = Math.abs(subDur - videoRuntimeMin) / videoRuntimeMin;
-                if (deviationPct <= DURATION_MATCH_PCT) {
-                    smartScore += DURATION_MATCH_BONUS;
-                    durationMatch = true;
-                    durationBonusCount++;
-                }
-            }
+            const deviationPct = (videoRuntimeMin && subDur)
+                ? Math.abs(subDur - videoRuntimeMin) / videoRuntimeMin
+                : null;
+            const durationMatch = deviationPct !== null && deviationPct <= DURATION_MATCH_PCT;
+            if (durationMatch) durationBonusCount++;
 
             const provider = sub._providerName || 'Personal Sub';
-            const originalId = String(sub.id || `esay${index}`);
-            const safeId = originalId.replace(/[^a-zA-Z0-9]/g, '').substring(0, 10);
-            
-            let warning = (sub.behaviorHints?.notWebReady) ? ' ⚠️ נגן חיצוני' : '';
+            const safeId = String(sub.id || `esay${index}`).replace(/[^a-zA-Z0-9]/g, '').substring(0, 10);
+            const warning = (sub.behaviorHints?.notWebReady) ? ' ⚠️ נגן חיצוני' : '';
             const rawTitle = String(sub.title || 'כתובית').replace(/\n+/g, ' ').trim();
 
-            const scoreLabel = `★${Math.round(smartScore)}`;
             const durLabel = durationMatch
                 ? ` sync✓${Math.round((1 - deviationPct) * 100)}%`
                 : (subDur ? ` ${Math.round(subDur)}m` : '');
-            const finalTitle = `${rawTitle}${displayType} [${provider}] ${scoreLabel}${durLabel}${warning}`.replace(/\s{2,}/g, ' ').trim();
+            const finalTitle = `${rawTitle}${displayType} [${provider}] ★${Math.round(score)}${durLabel}${warning}`
+                .replace(/\s{2,}/g, ' ').trim();
 
-            const proxiedUrl = buildProxyUrl(req, String(sub.url));
-
-            const compliantSub = {
+            cleanedSubs.push({
                 id: `esay_${index}_${safeId}`,
-                url: proxiedUrl,
-                lang: lang,
+                url: buildProxyUrl(req, String(sub.url)),
+                lang,
                 title: finalTitle,
+                // Kept only for sorting and sync-base selection; stripped before response.
+                sourceUrl: String(sub.url),
+                _classifiedLang: lang,
                 _isTextSearch: sub._isTextSearch,
-                _rawScore: isNaN(smartScore) ? 0 : smartScore,
-                _isAuto: (l.includes('make') || l.includes('submaker')) ? 1 : 0,
-                _durationMatch: durationMatch ? 1 : 0
-            };
-            
-            cleanedSubs.push(compliantSub);
+                _rawScore: Number.isFinite(score) ? score : 0,
+                _isAuto: isAuto,
+                _durationMatch: durationMatch ? 1 : 0,
+            });
         });
 
         if (durationBonusCount > 0) {
-            console.log(`[ESAY SUBTITLES] 🎯 בונוס התאמת משך (±5%) הוענק ל-${durationBonusCount} כתוביות (וידאו=${videoRuntimeMin}m)`);
+            console.log(`[ESAY SUBTITLES] 🎯 התאמת משך (±5%) נמצאה ב-${durationBonusCount} כתוביות (וידאו=${videoRuntimeMin}m)`);
         }
         if (mislabelDropped > 0) {
             console.log(`[ESAY SUBTITLES] 🧹 הוסרו ${mislabelDropped} כתוביות שסומנו עברית אך אינן בעברית`);
         }
 
-        // מיון חכם — best first (descending score), Hebrew preferred
+        // Language first (Hebrew audience), human before machine translation, then
+        // the continuous relevance score.
         cleanedSubs.sort((a, b) => {
-            const getScore = (l) => l === 'heb' ? 3 : (l === 'eng' ? 2 : (l === 'rus' ? 1 : 0));
-            const scoreA = getScore(a.lang);
-            const scoreB = getScore(b.lang);
-            
-            if (scoreA !== scoreB) return scoreB - scoreA;
-            if (a._durationMatch !== b._durationMatch) return b._durationMatch - a._durationMatch;
-            if (a._isAuto !== b._isAuto) return a._isAuto - b._isAuto; 
+            const langRank = (l) => l === 'heb' ? 3 : (l === 'eng' ? 2 : (l === 'rus' ? 1 : 0));
+            const rankDelta = langRank(b.lang) - langRank(a.lang);
+            if (rankDelta !== 0) return rankDelta;
+            if (a._isAuto !== b._isAuto) return a._isAuto - b._isAuto;
+            if (b._rawScore !== a._rawScore) return b._rawScore - a._rawScore;
             if (a._isTextSearch !== b._isTextSearch) return a._isTextSearch ? 1 : -1;
-            return b._rawScore - a._rawScore;
+            return a.id < b.id ? -1 : 1;
         });
 
-        cleanedSubs.forEach(sub => {
-            delete sub._isTextSearch;
-            delete sub._rawScore;
-            delete sub._isAuto;
-            delete sub._durationMatch;
-            delete sub.calculatedProvider;
+        // Auto-sync tracks are advertised on the very first list. Selecting one is
+        // what starts the alignment job; listing them costs nothing.
+        let syncTracks = [];
+        const base = publicBaseUrl(req);
+        if (videoKey && base) {
+            syncTracks = buildSyncTrackDescriptors({
+                bases: pickHebrewSyncBases(cleanedSubs),
+                videoKey,
+                contentType: type,
+                contentId: id,
+                publicBaseUrl: base,
+            });
+            if (syncTracks.length) {
+                console.log(`[ESAY SUBTITLES] 🔄 הוצעו ${syncTracks.length} מסלולי סנכרון כתוביות`);
+            }
+        }
+
+        const responseSubs = [...syncTracks, ...cleanedSubs].map((sub) => {
+            const { sourceUrl, _classifiedLang, _isTextSearch, _rawScore, _isAuto, _durationMatch,
+                _syncTrack, _syncSlot, _syncFingerprint, calculatedProvider, ...clean } = sub;
+            return clean;
         });
 
-        console.log(`[ESAY SUBTITLES] 🏁 הליך הסתיים. נשלחו ${cleanedSubs.length} כתוביות סטריליות ללקוח.\n`);
-        return res.status(200).json({ subtitles: cleanedSubs });
+        console.log(`[ESAY SUBTITLES] 🏁 הליך הסתיים. נשלחו ${responseSubs.length} כתוביות ללקוח.\n`);
+        return res.status(200).json({ subtitles: responseSubs });
 
     } catch (error) {
         console.error('[ESAY SUBTITLES] 💥 Global Proxy Error:', error);
         return res.status(200).json({ subtitles: [] });
     }
 }
+
+export { calculateSubtitleScore, classifySubtitleLang, durationCompatibility };
