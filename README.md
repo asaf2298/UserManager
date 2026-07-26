@@ -82,7 +82,7 @@ Optional override: `YASTREAM_URL` if you need an explicit base outside `ADDON_UR
 | `SUPABASE_ANON_KEY` | Read-only resolver key (`personal_titles` SELECT) | — |
 | `SUPABASE_SERVICE_ROLE_KEY` | **Server-only**: ingest, sightings, audit queue, sync jobs | — |
 
-`TORBOX_API_TOKEN` belongs on the **media-intelligence worker only** — never on Vercel and never in client URLs.
+`TORBOX_API_TOKEN` belongs on the **media-intelligence worker only** — never on Vercel and never in client URLs. The worker uses it for cache audits and to resolve a TorBox CDN locator for subtitle sync probing (Torrentio resolve URLs return Cloudflare 403 from the droplet).
 
 ### ID mapping (opt-in, Supabase)
 
