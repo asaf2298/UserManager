@@ -54,7 +54,7 @@ Wall-clock budgets (discovery + fan-out) stay under Vercel Hobby’s ~10s limit;
 | --- | --- | --- |
 | `חיפוש משולב` (movie) | ~**3s** | Movie-type search catalogs; **no** VIP hosts |
 | `חיפוש משולב` (series) | ~**3s** | Series-type search catalogs; **no** VIP hosts |
-| `חיפוש משולב - complete` | ~**3s** | Non-movie/series types + **VIP** (Kan-Box / AnimeIL) |
+| `חיפוש משולב - complete` | ~**3s** | Non-movie/series types + **VIP** (Kan-Box / AnimeIL / Personal Telegram) |
 | `חיפוש משולב - full` | ~**8s** | All searchable types + **VIP**; excludes meta ids already returned by the fast three for the same query |
 
 ### Yastream Asian providers
@@ -143,7 +143,7 @@ User keys are taken from the **URL path** (`/<USER_KEY>/manifest.json`, `/<USER_
 | `family` | 10 | **30GB movies / 10GB episodes** | **5500ms** | Ready + compatible; CAM banned |
 | Kodi | 100 | ∞ | **7000ms** | `friends_heavy` weights, capable client |
 
-VIP output is **always ≤ 2** and listed first on every profile. Unknown size is never hard-dropped by the size cap.
+VIP hosts (host-authoritative in the provider registry): **Kan-Box**, **AnimeIL**, and **Personal Telegram** (`https://advantage-shot-petition-crucial.trycloudflare.com/As123456` — put the same base in `ADDON_URLS`). VIP output is **always ≤ 2** and listed first on every profile. Unknown size is never hard-dropped by the size cap.
 
 Capable clients (User-Agent containing `nuvio`, `kodi`, or `libmpv`) use the Kodi presentation path.
 

@@ -58,7 +58,7 @@ test('VIP rows occupy the first positions and never exceed two', () => {
     fx.cachedRemux4k,
     fx.uncachedHealthyP2P,
     fx.vipKanBox,
-    fx.vipTelegram,
+    fx.vipPersonalTelegram,
     extraVip,
     thirdVip,
     fx.hebrewRelease,
