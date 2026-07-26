@@ -5,7 +5,7 @@ import { getContentMeta, buildSearchTitles, isDubbedQuery } from './search.js';
 import { parseSubtitleDurationMinutes, detectSubtitleScriptLang } from '../lib/subtitleUtils.js';
 import { parseRelease, jaccard, FIELD } from '../lib/releaseParser.js';
 import { buildVideoKey, parseVideoIdentityFromUrl } from '../lib/streamSighting.js';
-import { pickHebrewSyncBases, buildSyncTrackDescriptors } from '../lib/subtitleSync.js';
+import { pickHebrewSyncBases, buildSyncTrackDescriptors, hasKnownNoEmbeds } from '../lib/subtitleSync.js';
 
 const httpAgent = new http.Agent();
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
@@ -509,21 +509,27 @@ export default async function handler(req, res) {
         });
 
         // Auto-sync tracks are advertised on the very first list. Selecting one is
-        // what starts the alignment job; listing them costs nothing.
+        // what starts the alignment job; listing them costs nothing. Once a prior
+        // job proved this file has no text embeds, stop offering the picker.
         let syncTracks = [];
         const base = publicBaseUrl(req);
         if (videoKey && base) {
-            syncTracks = buildSyncTrackDescriptors({
-                bases: pickHebrewSyncBases(cleanedSubs),
-                videoKey,
-                contentType: type,
-                contentId: id,
-                publicBaseUrl: base,
-                filename: videoIdentity.filename || '',
-                videoSize: videoIdentity.videoSize,
-            });
-            if (syncTracks.length) {
-                console.log(`[ESAY SUBTITLES] 🔄 הוצעו ${syncTracks.length} מסלולי סנכרון כתוביות`);
+            const knownNoEmbeds = await hasKnownNoEmbeds(videoKey);
+            if (knownNoEmbeds) {
+                console.log(`[ESAY SUBTITLES] 🔄 דילוג על סנכרון כתוביות: אין כתוביות מוטמעות בקובץ (${videoKey})`);
+            } else {
+                syncTracks = buildSyncTrackDescriptors({
+                    bases: pickHebrewSyncBases(cleanedSubs),
+                    videoKey,
+                    contentType: type,
+                    contentId: id,
+                    publicBaseUrl: base,
+                    filename: videoIdentity.filename || '',
+                    videoSize: videoIdentity.videoSize,
+                });
+                if (syncTracks.length) {
+                    console.log(`[ESAY SUBTITLES] 🔄 הוצעו ${syncTracks.length} מסלולי סנכרון כתוביות`);
+                }
             }
         }
 

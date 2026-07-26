@@ -6,11 +6,13 @@ import assert from 'node:assert/strict';
 import {
   pickHebrewSyncBases,
   buildSyncTrackDescriptors,
+  hasKnownNoEmbeds,
   rankEmbeddedTracks,
   trackNormality,
   SYNC_MESSAGES,
   SYNC_TRACK_LABEL,
   REFERENCE_SLOT,
+  FAIL_REASON,
   MAX_SYNC_BASES,
   buildOneCueSrt,
   computeSubFingerprint,
@@ -68,6 +70,13 @@ test('sync track injection advertises up to four stable URLs immediately', () =>
   assert.ok(tracks.every(t => t.url.includes('videoSize=1234567890')));
   assert.equal(tracks.filter(t => t._syncSlot === REFERENCE_SLOT.OFFICIAL).length, 2);
   assert.equal(tracks.filter(t => t._syncSlot === REFERENCE_SLOT.ENGLISH).length, 2);
+});
+
+test('hasKnownNoEmbeds fails open without Supabase', async () => {
+  assert.equal(FAIL_REASON.NO_EMBEDS, 'no_embeds');
+  assert.equal(await hasKnownNoEmbeds('vh:abc'), false);
+  assert.equal(await hasKnownNoEmbeds(''), false);
+  assert.equal(await hasKnownNoEmbeds(null), false);
 });
 
 test('viewer-facing sync messages are exact and stable', () => {

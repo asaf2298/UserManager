@@ -39,10 +39,12 @@ export default async function handler(req, res) {
     }
 
     // Re-resolve the playable file each time: debrid links expire, and the job may
-    // be enqueued minutes after the stream list was built.
+    // be enqueued minutes after the stream list was built. videoKey itself is a
+    // match key for fn:/fs:/vh: when filename/size query params were omitted.
     const sighting = contentId
       ? await resolvePlayableSighting({
         contentId,
+        videoKey,
         identity: {
           videoHash: videoKey.startsWith('vh:') ? videoKey.slice(3) : null,
           filename: url.searchParams.get('filename'),
