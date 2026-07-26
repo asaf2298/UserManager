@@ -45,6 +45,7 @@ test('sync track injection advertises up to four stable URLs immediately', () =>
     publicBaseUrl: 'https://personal.example',
   });
   assert.equal(tracks.length, 4);
+  assert.ok(tracks.every(t => t.lang === SYNC_TRACK_LABEL), 'sync uses custom lang like Submaker');
   assert.ok(tracks.every(t => t.title.includes(SYNC_TRACK_LABEL)));
   assert.ok(tracks.every(t => t.url.includes('/api/sub-sync?')));
   assert.ok(tracks.every(t => t.url.includes('videoKey=vid_abc')));

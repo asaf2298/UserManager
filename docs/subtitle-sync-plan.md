@@ -18,7 +18,7 @@ than guessing. Bitmap subtitles (PGS/VobSub) are the one hard exclusion, because
 
 ## Product flow
 
-1. **First subtitle list** already contains up to four `סנכרן כתבויות` tracks:
+1. **First subtitle list** already contains up to four `סנכרון כתוביות` tracks:
    the top two non-auto Hebrew subtitles × two reference slots (`official`,
    `english`). Listing them costs nothing.
 2. **Selecting one starts the work.** Nothing heavy runs on a list request.

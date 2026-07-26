@@ -33,7 +33,7 @@ Non-playable “notice” rows from upstreams are dropped (Yuki `[YS INFO]` / `[
 ### Smart subtitles + embedded auto-sync
 * Continuous subtitle score: release Jaccard, source/group/resolution/duration compatibility, within-request provider percentile.
 * Language ordering remains Hebrew → English → Russian. Auto-generated tracks stay visible but sort after human tracks and are excluded as sync bases.
-* Up to four immediate `סנכרן כתבויות` tracks (2 Hebrew bases × official / English reference slots). Selection starts work; pending returns a one-cue wait SRT; ready returns the full alass-aligned SRT at the same URL.
+* Up to four immediate `סנכרון כתוביות` tracks (2 Hebrew bases × official / English reference slots). Selection starts work; pending returns a one-cue wait SRT; ready returns the full alass-aligned SRT at the same URL.
 * Embedded text references only (no audio / Whisper / `ffsubsync` / `offsetMs`). Worker yields on Telegram `personal_host_busy`; TorBox playback does not block sync.
 
 ### Israeli catalogs (Kan-Box)
