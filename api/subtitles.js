@@ -519,6 +519,8 @@ export default async function handler(req, res) {
                 contentType: type,
                 contentId: id,
                 publicBaseUrl: base,
+                filename: videoIdentity.filename || '',
+                videoSize: videoIdentity.videoSize,
             });
             if (syncTracks.length) {
                 console.log(`[ESAY SUBTITLES] 🔄 הוצעו ${syncTracks.length} מסלולי סנכרון כתוביות`);

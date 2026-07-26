@@ -32,6 +32,19 @@ test('Hebrew sync bases skip auto-translated tracks and cap at two', () => {
   ]);
 });
 
+test('Hebrew sync bases prefer OpenSubtitles over ktuvit', () => {
+  const ranked = [
+    { lang: 'heb', _classifiedLang: 'heb', sourceUrl: 'https://ktuvit.example/a.srt', _providerName: 'Ktuvit', _isAuto: false },
+    { lang: 'heb', _classifiedLang: 'heb', sourceUrl: 'https://opensubtitles.example/b.srt', _providerName: 'OpenSubtitles', _isAuto: false },
+    { lang: 'heb', _classifiedLang: 'heb', sourceUrl: 'https://other.example/c.srt', _providerName: 'Other', _isAuto: false },
+  ];
+  const bases = pickHebrewSyncBases(ranked);
+  assert.deepEqual(bases.map(b => b.sourceUrl), [
+    'https://opensubtitles.example/b.srt',
+    'https://other.example/c.srt',
+  ]);
+});
+
 test('sync track injection advertises up to four stable URLs immediately', () => {
   const bases = [
     { sourceUrl: 'https://subs.example/a.srt' },
@@ -43,12 +56,16 @@ test('sync track injection advertises up to four stable URLs immediately', () =>
     contentType: 'movie',
     contentId: 'tt15239678',
     publicBaseUrl: 'https://personal.example',
+    filename: 'Movie.Name.2024.mkv',
+    videoSize: 1234567890,
   });
   assert.equal(tracks.length, 4);
   assert.ok(tracks.every(t => t.lang === SYNC_TRACK_LABEL), 'sync uses custom lang like Submaker');
   assert.ok(tracks.every(t => t.title.includes(SYNC_TRACK_LABEL)));
   assert.ok(tracks.every(t => t.url.includes('/api/sub-sync?')));
   assert.ok(tracks.every(t => t.url.includes('videoKey=vid_abc')));
+  assert.ok(tracks.every(t => t.url.includes('filename=Movie.Name.2024.mkv')));
+  assert.ok(tracks.every(t => t.url.includes('videoSize=1234567890')));
   assert.equal(tracks.filter(t => t._syncSlot === REFERENCE_SLOT.OFFICIAL).length, 2);
   assert.equal(tracks.filter(t => t._syncSlot === REFERENCE_SLOT.ENGLISH).length, 2);
 });
@@ -60,6 +77,9 @@ test('viewer-facing sync messages are exact and stable', () => {
   const pending = buildOneCueSrt(SYNC_MESSAGES.PENDING);
   assert.match(pending, /please wait one minute and reselect to sync/);
   assert.match(pending, /-->/);
+  // Mid-film visibility: status cues must repeat past the opening minutes.
+  assert.match(pending, /01:00:00,000 -->/);
+  assert.ok((pending.match(/please wait one minute and reselect to sync/g) || []).length > 10);
 });
 
 test('proxy-wrapped and bare subtitle URLs share a fingerprint', () => {
