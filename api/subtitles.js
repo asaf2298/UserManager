@@ -514,7 +514,7 @@ export default async function handler(req, res) {
         let syncTracks = [];
         const base = publicBaseUrl(req);
         if (videoKey && base) {
-            const knownNoEmbeds = await hasKnownNoEmbeds(videoKey);
+            const knownNoEmbeds = await hasKnownNoEmbeds(videoKey, id);
             if (knownNoEmbeds) {
                 console.log(`[ESAY SUBTITLES] 🔄 דילוג על סנכרון כתוביות: אין כתוביות מוטמעות בקובץ (${videoKey})`);
             } else {

@@ -33,7 +33,8 @@ Terminal messages are exact:
 | State | On-screen text |
 | --- | --- |
 | pending / running | `please wait one minute and reselect to sync` |
-| no usable text track | `no available embedded subtitles` |
+| file has no text embeds (PGS-only etc.) | `no available embedded subtitles` |
+| this slot/base cannot use the embeds; another may | `try another sync subtitle` |
 | other terminal failure | `sorry couldnt sync` |
 
 `/api/sub-sync` responds `Cache-Control: no-store`, otherwise a player could cache
@@ -70,10 +71,16 @@ normality   = dialogue 1.00 | forced 0.80 | SDH/HI 0.75 | commentary/signs/songs
 ```
 
 - `official` slot targets the TMDB production language (`original_language`).
-- `english` slot targets English, falling back to the best remaining track.
+- `english` slot targets English.
+- If the slot's language is absent but another labeled language exists, that
+  option fails with `try another sync subtitle` (pick the other סנכרון track) —
+  never with file-level `no available embedded subtitles`.
+- Unlabeled text tracks are used only when no conflicting labeled alternative
+  exists.
 - Cue counts come from actually extracting shortlisted candidates, because
   `ffprobe` cannot distinguish a 40-cue forced track from a full dialogue track.
-- One usable track means the second slot reports `no available embedded subtitles`.
+- List hide for `סנכרון כתוביות` only after a file-level `no_embeds` job, scoped
+  by `content_id` (and never from a bare unscoped `fn:` key alone).
 
 `alass` runs subtitle-to-subtitle and the **rewritten SRT** is stored, not a single
 global offset, so non-linear drift is corrected too.

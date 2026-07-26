@@ -83,8 +83,9 @@ alass --help | head -1
   is the only match for the target language.
 - Bitmap subtitles (PGS/VobSub) are the single hard exclusion: `alass` needs text.
 - Reference slots are `official` (the production language from TMDB) and
-  `english`. If a file has one usable text track, the second slot reports
-  `no available embedded subtitles`.
+  `english`. If the slot language is missing but another labeled language
+  exists, the viewer sees `try another sync subtitle` instead of a file-level
+  no-embeds failure.
 - Output is a rewritten SRT, not a global offset, so non-linear drift is corrected.
 
 ## What TorBox is and is not used for

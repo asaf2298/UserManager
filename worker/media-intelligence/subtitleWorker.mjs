@@ -19,7 +19,7 @@ import path from 'node:path';
 import fetch from 'node-fetch';
 import { selectRows, updateRows, insertRows } from '../../lib/supabaseServer.js';
 import {
-  rankEmbeddedTracks, REFERENCE_SLOT, JOB_STATUS, FAIL_REASON,
+  rankEmbeddedTracks, slotReferencePool, REFERENCE_SLOT, JOB_STATUS, FAIL_REASON,
 } from '../../lib/subtitleSync.js';
 import { countSubtitleCues, decodeSubtitleBuffer } from '../../lib/subtitleUtils.js';
 import { BITMAP_SUBTITLE_CODECS } from '../../lib/releaseParser.js';
@@ -151,11 +151,17 @@ async function extractTrack(sourceUrl, trackIndex, workDir, { onSpawn }) {
  * a 40-cue forced track from a full dialogue track. Extraction is capped to the
  * few most promising candidates to bound cost.
  */
+/**
+ * @returns {Promise<{ ok:true, reference:object }|{ ok:false, reason:string }>}
+ */
 async function selectReference(sourceUrl, tracks, { slot, officialLanguage, runtimeMinutes, workDir, onSpawn }) {
-  const textTracks = tracks.filter(t => t.isText);
-  if (!textTracks.length) return null;
+  const pool = slotReferencePool(tracks, { slot, officialLanguage });
+  if (pool.tryOther) {
+    return { ok: false, reason: FAIL_REASON.TRY_OTHER_SYNC };
+  }
+  if (!pool.tracks.length) return { ok: false, reason: FAIL_REASON.NO_EMBEDS };
 
-  const provisional = rankEmbeddedTracks(textTracks, { slot, officialLanguage, runtimeMinutes });
+  const provisional = rankEmbeddedTracks(pool.tracks, { slot, officialLanguage, runtimeMinutes });
   const shortlist = provisional.slice(0, 3);
 
   const extracted = [];
@@ -168,11 +174,12 @@ async function selectReference(sourceUrl, tracks, { slot, officialLanguage, runt
       log('subtitle', `track ${track.index} extraction failed: ${err.message}`);
     }
   }
-  if (!extracted.length) return null;
+  if (!extracted.length) return { ok: false, reason: FAIL_REASON.PROBE_FAILED };
 
   const reranked = rankEmbeddedTracks(extracted, { slot, officialLanguage, runtimeMinutes });
   const best = reranked[0];
-  return extracted.find(t => t.index === best.index) || extracted[0];
+  const reference = extracted.find(t => t.index === best.index) || extracted[0];
+  return { ok: true, reference };
 }
 
 /** Fetch the Hebrew base subtitle and normalize it to UTF-8. */
@@ -365,7 +372,8 @@ export async function processSubtitleJob(job, control) {
 
     const textTracks = tracks.filter(t => t.isText);
     if (!textTracks.length) {
-      // Terminal: no retry will conjure a text track into this file.
+      // File-level terminal: no retry will conjure a text track into this file.
+      // This is the only path that may hide סנכרון כתוביות on later lists.
       await finishJob(job.id, {
         status: JOB_STATUS.FAILED, fail_reason: FAIL_REASON.NO_EMBEDS, attempts: LIMITS.maxAttempts,
       });
@@ -373,19 +381,38 @@ export async function processSubtitleJob(job, control) {
     }
 
     checkAbort();
-    const reference = await selectReference(source.url, tracks, {
+    const selected = await selectReference(source.url, tracks, {
       slot: job.reference_slot || REFERENCE_SLOT.OFFICIAL,
       officialLanguage,
       runtimeMinutes,
       workDir,
       onSpawn,
     });
-    if (!reference) {
-      await finishJob(job.id, {
-        status: JOB_STATUS.FAILED, fail_reason: FAIL_REASON.NO_EMBEDS, attempts: LIMITS.maxAttempts,
+    if (!selected.ok) {
+      if (selected.reason === FAIL_REASON.TRY_OTHER_SYNC) {
+        // Embeds exist for another language/slot — tell the viewer to switch track.
+        await finishJob(job.id, {
+          status: JOB_STATUS.FAILED, fail_reason: FAIL_REASON.TRY_OTHER_SYNC, attempts: LIMITS.maxAttempts,
+        });
+        return { ok: false, reason: FAIL_REASON.TRY_OTHER_SYNC };
+      }
+      if (selected.reason === FAIL_REASON.NO_EMBEDS) {
+        await finishJob(job.id, {
+          status: JOB_STATUS.FAILED, fail_reason: FAIL_REASON.NO_EMBEDS, attempts: LIMITS.maxAttempts,
+        });
+        return { ok: false, reason: FAIL_REASON.NO_EMBEDS };
+      }
+      // Text embeds present but extraction failed (CDN/ffmpeg) — soft, retriable.
+      log('subtitle', `text embeds present but extraction failed for job ${job.id}`, {
+        textTracks: textTracks.length,
+        slot: job.reference_slot,
       });
-      return { ok: false, reason: FAIL_REASON.NO_EMBEDS };
+      await finishJob(job.id, {
+        status: JOB_STATUS.FAILED, fail_reason: FAIL_REASON.PROBE_FAILED, attempts: (job.attempts || 0) + 1,
+      });
+      return { ok: false, reason: FAIL_REASON.PROBE_FAILED, error: 'extract_failed' };
     }
+    const reference = selected.reference;
 
     checkAbort();
     const baseText = await fetchBaseSubtitle(job.base_sub_url);
