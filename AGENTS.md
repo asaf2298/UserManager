@@ -45,7 +45,8 @@ Shared Docker host service under `worker/media-intelligence/`: TorBox cache audi
 Worker-only env (never put on Vercel):
 
 ```
-TORBOX_API_TOKEN=…                   # checkcached / mylist audits only
+TORBOX_API_TOKEN=…                   # audits + subtitle sync CDN probe (not on Vercel)
+TMDB_API_KEY=…                       # official-language sync slot
 SUPABASE_URL=…
 SUPABASE_SERVICE_ROLE_KEY=…
 ```

@@ -35,13 +35,21 @@ avoid. This is intentional.
 ```
 SUPABASE_URL=https://<project>.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=…      # required: worker tables are service-role only
-TORBOX_API_TOKEN=…               # optional: without it, audits are skipped
+TORBOX_API_TOKEN=…               # required for subtitle probe + optional audits
+TMDB_API_KEY=…                   # official-language reference slot
 WORKER_ID=media-worker-1         # optional label used when claiming jobs
 HOST_BUSY_ID=default             # optional: lease row id
 ```
 
 `TORBOX_API_TOKEN` must exist **only** here. It is never sent to a client and
 never stored in telemetry.
+
+**Subtitle sync probe:** Torrentio/Comet resolve URLs are Cloudflare-blocked from
+datacenter IPs, so `ffprobe` against the offered playable URL fails with HTTP 403.
+With `TORBOX_API_TOKEN`, the worker resolves a TorBox CDN locator via
+`createtorrent` (`add_only_if_cached`) + `requestdl` and probes that instead.
+Without the token (or when the hash is not cached on TorBox), sync jobs fail
+with `probe_failed`.
 
 ## Run
 
@@ -81,9 +89,12 @@ alass --help | head -1
 
 ## What TorBox is and is not used for
 
-TorBox has no "user clicked and playback succeeded" endpoint. `mylist` is account
-state and `requestdl` only proves a link can be issued. So TorBox is used purely
-as **audit evidence** for a falsifiable claim:
+TorBox has no "user clicked and playback succeeded" endpoint. Beyond subtitle
+probe CDN resolution (above), TorBox is also used as **audit evidence** for a
+falsifiable cache claim:
+
+`mylist` is account state and `requestdl` only proves a link can be issued —
+never that a viewer played anything:
 
 | Observation | Meaning |
 | --- | --- |

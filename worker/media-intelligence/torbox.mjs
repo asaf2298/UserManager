@@ -1,20 +1,25 @@
 /**
  * TorBox API client (v1).
  *
- * Scope is deliberately narrow. TorBox can tell us whether a hash is cached and
- * what an account already holds; it cannot tell us that a viewer clicked a stream
- * or that playback succeeded. So this module is used for *audits* — checking
- * whether a provider's cache claim was true — and never as click telemetry.
+ * Used for:
+ *   - Audits (`checkcached` / `mylist`) — never as click telemetry
+ *   - Subtitle sync probe: issue a CDN download locator so the droplet can
+ *     ffprobe without hitting Cloudflare-blocked Torrentio resolve URLs
  *
  * Endpoints used:
- *   GET /v1/api/torrents/checkcached  — up to ~100 hashes per call, ~1s, hourly cached
- *   GET /v1/api/torrents/mylist       — account download state (updated every ~600s)
- *   GET /v1/api/torrents/requestdl    — proves a locator can be issued, not that it played
+ *   GET  /v1/api/torrents/checkcached
+ *   GET  /v1/api/torrents/mylist
+ *   GET  /v1/api/torrents/requestdl
+ *   POST /v1/api/torrents/createtorrent
  */
 import fetch from 'node-fetch';
 import { TORBOX_API_BASE, TORBOX_API_VERSION, TORBOX_API_TOKEN, LIMITS, log } from './config.mjs';
+import { normalizeInfoHash } from '../../lib/playbackLocator.js';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+const CREATE_TIMEOUT_MS = 30_000;
+const PROBE_READY_ATTEMPTS = 6;
+const PROBE_READY_WAIT_MS = 2_500;
 
 async function torboxGet(path, params, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const url = new URL(`${TORBOX_API_BASE}/${TORBOX_API_VERSION}/api/${path}`);
@@ -49,6 +54,48 @@ async function torboxGet(path, params, timeoutMs = DEFAULT_TIMEOUT_MS) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function torboxPostForm(path, fields, timeoutMs = CREATE_TIMEOUT_MS) {
+  const url = `${TORBOX_API_BASE}/${TORBOX_API_VERSION}/api/${path}`;
+  const form = new FormData();
+  for (const [key, value] of Object.entries(fields || {})) {
+    if (value === undefined || value === null || value === '') continue;
+    form.append(key, String(value));
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${TORBOX_API_TOKEN}`,
+        Accept: 'application/json',
+      },
+      body: form,
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let payload = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = null;
+    }
+    if (!response.ok) {
+      return { ok: false, status: response.status, error: payload?.error || text.slice(0, 200), data: null };
+    }
+    return { ok: payload?.success !== false, status: response.status, error: payload?.error || null, data: payload?.data ?? null };
+  } catch (err) {
+    return { ok: false, status: 0, error: String(err?.name || err), data: null };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /**
@@ -119,5 +166,135 @@ export async function requestDownloadLink({ torrentId, fileId, userIp }) {
     user_ip: userIp,
   });
   if (!result.ok) return { ok: false, url: null, error: result.error };
-  return { ok: true, url: typeof result.data === 'string' ? result.data : null, error: null };
+  // data may be a bare URL string or { url } depending on API version.
+  const url = typeof result.data === 'string'
+    ? result.data
+    : (result.data?.url || result.data?.download || null);
+  return { ok: !!url, url, error: url ? null : (result.error || 'no_url_in_response') };
+}
+
+/** Find a torrent already on the account by infoHash. */
+export async function findTorrentByHash(infoHash) {
+  const hash = normalizeInfoHash(infoHash);
+  if (!hash) return { ok: false, torrent: null, error: 'bad_hash' };
+  const list = await getMyList({ limit: 1000, bypassCache: true });
+  if (!list.ok) return { ok: false, torrent: null, error: list.error };
+  const torrent = list.items.find(item => normalizeInfoHash(item.hash || item.Hash) === hash) || null;
+  return { ok: true, torrent, error: null };
+}
+
+/**
+ * Ensure the hash exists on the TorBox account.
+ * Prefer an existing mylist entry; otherwise create with add_only_if_cached so we
+ * never start a multi-hour remux download just to sync subtitles.
+ */
+export async function ensureTorrentForHash(infoHash) {
+  const hash = normalizeInfoHash(infoHash);
+  if (!hash) return { ok: false, torrentId: null, torrent: null, error: 'bad_hash' };
+
+  const existing = await findTorrentByHash(hash);
+  if (existing.ok && existing.torrent) {
+    const id = existing.torrent.id ?? existing.torrent.torrent_id;
+    return { ok: true, torrentId: id, torrent: existing.torrent, error: null, created: false };
+  }
+
+  const created = await torboxPostForm('torrents/createtorrent', {
+    magnet: `magnet:?xt=urn:btih:${hash}`,
+    add_only_if_cached: 'true',
+    seed: '3',
+  });
+  if (!created.ok) {
+    return { ok: false, torrentId: null, torrent: null, error: created.error || 'create_failed', created: false };
+  }
+
+  const torrentId = created.data?.torrent_id ?? created.data?.id ?? null;
+  // Fresh creates often need a short settle before files appear on mylist.
+  for (let attempt = 0; attempt < PROBE_READY_ATTEMPTS; attempt++) {
+    const again = await findTorrentByHash(hash);
+    if (again.ok && again.torrent) {
+      const id = again.torrent.id ?? again.torrent.torrent_id ?? torrentId;
+      return { ok: true, torrentId: id, torrent: again.torrent, error: null, created: true };
+    }
+    await sleep(PROBE_READY_WAIT_MS);
+  }
+
+  if (torrentId != null) {
+    return { ok: true, torrentId, torrent: created.data, error: null, created: true };
+  }
+  return { ok: false, torrentId: null, torrent: null, error: 'torrent_not_ready', created: true };
+}
+
+/**
+ * Pick the TorBox file id for the stream we offered.
+ * Prefer explicit file index, then filename match, then largest video-ish file.
+ */
+export function pickTorboxFileId(torrent, { fileIdx = null, filename = null } = {}) {
+  const files = Array.isArray(torrent?.files) ? torrent.files : [];
+  if (!files.length) return null;
+
+  if (Number.isFinite(fileIdx)) {
+    const byIndex = files.find(f => Number(f.id) === Number(fileIdx) || Number(f.file_id) === Number(fileIdx));
+    if (byIndex) return Number(byIndex.id ?? byIndex.file_id);
+    // Some providers use 0-based index into the files array.
+    if (fileIdx >= 0 && fileIdx < files.length) {
+      return Number(files[fileIdx].id ?? files[fileIdx].file_id);
+    }
+  }
+
+  if (filename) {
+    const want = String(filename).toLowerCase().replace(/\s+/g, ' ').trim();
+    const byName = files.find(f => String(f.name || f.filename || '').toLowerCase().replace(/\s+/g, ' ').includes(want)
+      || want.includes(String(f.name || f.filename || '').toLowerCase().replace(/\s+/g, ' ')));
+    if (byName) return Number(byName.id ?? byName.file_id);
+  }
+
+  const sorted = [...files].sort((a, b) => (Number(b.size) || 0) - (Number(a.size) || 0));
+  const best = sorted[0];
+  return best ? Number(best.id ?? best.file_id) : null;
+}
+
+/**
+ * Resolve a droplet-reachable CDN URL for subtitle probing/extraction.
+ *
+ * @returns {Promise<{ ok:boolean, url:string|null, source:string, error:string|null, torrentId:*, fileId:* }>}
+ */
+export async function resolveProbeDownloadUrl({ infoHash, fileIdx = null, filename = null }) {
+  if (!TORBOX_API_TOKEN) {
+    return { ok: false, url: null, source: 'none', error: 'no_torbox_token', torrentId: null, fileId: null };
+  }
+  const ensured = await ensureTorrentForHash(infoHash);
+  if (!ensured.ok) {
+    log('torbox', `ensure torrent failed: ${ensured.error}`, { hash: infoHash });
+    return { ok: false, url: null, source: 'torbox', error: ensured.error, torrentId: null, fileId: null };
+  }
+
+  let torrent = ensured.torrent;
+  // mylist entries sometimes omit files until a second fetch.
+  if (!Array.isArray(torrent?.files) || !torrent.files.length) {
+    const refreshed = await findTorrentByHash(infoHash);
+    if (refreshed.ok && refreshed.torrent) torrent = refreshed.torrent;
+  }
+
+  const fileId = pickTorboxFileId(torrent, { fileIdx, filename });
+  if (fileId == null || !Number.isFinite(fileId)) {
+    return {
+      ok: false, url: null, source: 'torbox', error: 'no_file_id',
+      torrentId: ensured.torrentId, fileId: null,
+    };
+  }
+
+  const link = await requestDownloadLink({ torrentId: ensured.torrentId, fileId });
+  if (!link.ok || !link.url) {
+    log('torbox', `requestdl failed: ${link.error}`, { torrentId: ensured.torrentId, fileId });
+    return {
+      ok: false, url: null, source: 'torbox', error: link.error || 'requestdl_failed',
+      torrentId: ensured.torrentId, fileId,
+    };
+  }
+
+  log('torbox', 'issued CDN probe URL', { torrentId: ensured.torrentId, fileId, created: !!ensured.created });
+  return {
+    ok: true, url: link.url, source: 'torbox_cdn', error: null,
+    torrentId: ensured.torrentId, fileId,
+  };
 }

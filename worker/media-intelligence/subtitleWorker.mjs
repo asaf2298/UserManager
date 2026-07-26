@@ -25,7 +25,13 @@ import { countSubtitleCues, decodeSubtitleBuffer } from '../../lib/subtitleUtils
 import { BITMAP_SUBTITLE_CODECS } from '../../lib/releaseParser.js';
 import { getContentMeta } from '../../lib/search.js';
 import { MODEL_VERSION } from '../../lib/versions.js';
-import { LIMITS, WORKER_ID, log } from './config.mjs';
+import {
+  looksCloudflareProxiedPlayback,
+  parseFilenameFromPlaybackUrl,
+  resolveTorrentIdentity,
+} from '../../lib/playbackLocator.js';
+import { LIMITS, WORKER_ID, log, torboxConfigured } from './config.mjs';
+import { resolveProbeDownloadUrl } from './torbox.mjs';
 
 const JOBS_TABLE = 'personal_subtitle_sync_jobs';
 const CACHE_TABLE = 'personal_subtitle_sync';
@@ -208,7 +214,7 @@ async function alignWithAlass(referenceFile, baseFile, workDir, { onSpawn }) {
 export async function claimSubtitleJob() {
   const nowIso = new Date().toISOString();
   const params = new URLSearchParams({
-    select: 'id,video_key,content_type,content_id,sub_fingerprint,base_sub_url,reference_slot,playable_url,attempts',
+    select: 'id,video_key,content_type,content_id,sub_fingerprint,base_sub_url,reference_slot,playable_url,info_hash,file_idx,attempts',
     status: 'eq.queued',
     expires_at: `gt.${nowIso}`,
     order: 'created_at.asc',
@@ -227,6 +233,63 @@ export async function claimSubtitleJob() {
   // Empty representation means another worker won the race.
   if (!claim.ok || (Array.isArray(claim.data) && claim.data.length === 0)) return null;
   return job;
+}
+
+/**
+ * Choose a URL the droplet can actually open for ffprobe/ffmpeg.
+ * Torrentio/Comet resolve links are Cloudflare-blocked from DO; TorBox CDN is not.
+ */
+async function resolveWorkingSourceUrl(job) {
+  const offered = job.playable_url;
+  const identity = resolveTorrentIdentity({
+    infoHash: job.info_hash,
+    fileIdx: job.file_idx,
+    playableUrl: offered,
+  });
+  const filenameHint = parseFilenameFromPlaybackUrl(offered);
+
+  if (torboxConfigured() && identity.infoHash) {
+    const resolved = await resolveProbeDownloadUrl({
+      infoHash: identity.infoHash,
+      fileIdx: identity.fileIdx,
+      filename: filenameHint,
+    });
+    if (resolved.ok && resolved.url) {
+      // Backfill hash/index on the job row so later retries skip URL re-parsing.
+      if (!job.info_hash || job.info_hash !== identity.infoHash
+          || (identity.fileIdx != null && job.file_idx !== identity.fileIdx)) {
+        await updateRows(
+          JOBS_TABLE,
+          new URLSearchParams({ id: `eq.${job.id}` }),
+          {
+            info_hash: identity.infoHash,
+            file_idx: Number.isFinite(identity.fileIdx) ? identity.fileIdx : job.file_idx,
+            updated_at: new Date().toISOString(),
+          },
+          1500,
+        ).catch(() => null);
+      }
+      return { url: resolved.url, source: resolved.source, infoHash: identity.infoHash, fileIdx: identity.fileIdx };
+    }
+    log('subtitle', `TorBox CDN resolve failed (${resolved.error}); falling back to offered URL`, {
+      hash: identity.infoHash,
+      fileIdx: identity.fileIdx,
+    });
+  }
+
+  if (looksCloudflareProxiedPlayback(offered)) {
+    return {
+      url: null,
+      source: 'blocked',
+      error: torboxConfigured()
+        ? (identity.infoHash ? 'torbox_cdn_unavailable' : 'missing_info_hash_for_torbox')
+        : 'cloudflare_blocked_playback_url',
+      infoHash: identity.infoHash,
+      fileIdx: identity.fileIdx,
+    };
+  }
+
+  return { url: offered, source: 'offered', infoHash: identity.infoHash, fileIdx: identity.fileIdx };
 }
 
 async function finishJob(jobId, patch) {
@@ -266,10 +329,21 @@ export async function processSubtitleJob(job, control) {
   };
 
   try {
-    if (!job.playable_url) {
+    if (!job.playable_url && !job.info_hash) {
       await finishJob(job.id, { status: JOB_STATUS.FAILED, fail_reason: FAIL_REASON.NO_URL, attempts: (job.attempts || 0) + 1 });
       return { ok: false, reason: FAIL_REASON.NO_URL };
     }
+
+    checkAbort();
+    const source = await resolveWorkingSourceUrl(job);
+    if (!source.url) {
+      log('subtitle', `no reachable probe URL for job ${job.id}`, { error: source.error, hash: source.infoHash });
+      await finishJob(job.id, {
+        status: JOB_STATUS.FAILED, fail_reason: FAIL_REASON.PROBE_FAILED, attempts: (job.attempts || 0) + 1,
+      });
+      return { ok: false, reason: FAIL_REASON.PROBE_FAILED, error: source.error || 'no_probe_url' };
+    }
+    log('subtitle', `probing job ${job.id} via ${source.source}`, { hash: source.infoHash, fileIdx: source.fileIdx });
 
     checkAbort();
     const meta = job.content_id ? await getContentMeta(job.content_type || 'movie', job.content_id).catch(() => null) : null;
@@ -279,9 +353,10 @@ export async function processSubtitleJob(job, control) {
     checkAbort();
     let tracks;
     try {
-      tracks = await probeSubtitleTracks(job.playable_url, { onSpawn });
+      tracks = await probeSubtitleTracks(source.url, { onSpawn });
     } catch (err) {
       if (err instanceof BusyAbortError) throw err;
+      log('subtitle', `ffprobe failed for job ${job.id}: ${err.message}`, { source: source.source });
       await finishJob(job.id, {
         status: JOB_STATUS.FAILED, fail_reason: FAIL_REASON.PROBE_FAILED, attempts: (job.attempts || 0) + 1,
       });
@@ -298,7 +373,7 @@ export async function processSubtitleJob(job, control) {
     }
 
     checkAbort();
-    const reference = await selectReference(job.playable_url, tracks, {
+    const reference = await selectReference(source.url, tracks, {
       slot: job.reference_slot || REFERENCE_SLOT.OFFICIAL,
       officialLanguage,
       runtimeMinutes,
