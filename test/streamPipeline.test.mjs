@@ -4,7 +4,14 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rankAndSelect } from '../lib/streamEngine.js';
+import {
+  rankAndSelect,
+  applyEligibility,
+  pruneEligibleCandidates,
+  prunePriority,
+  MAX_RANKER_CANDIDATES,
+  MIN_PER_PROVIDER_KEEP,
+} from '../lib/streamEngine.js';
 import { resolveProfile } from '../lib/streamRanker.js';
 import { extractFeatures } from '../lib/streamFeatures.js';
 import { deduplicateCandidates } from '../lib/streamDedup.js';
@@ -107,4 +114,50 @@ test('pipeline output length stays within the profile target', () => {
   const result = rankAndSelect(syntheticCandidates(80), pipelineContext('friends_light'));
   assert.ok(result.selected.length <= resolveProfile('friends_light').target);
   assert.ok(result.selected.every(row => Number.isFinite(row.baseScore)));
+});
+
+test('prunePriority prefers visual/availability features over weaker encodes', () => {
+  const ctx = pipelineContext('everything');
+  const { eligible } = applyEligibility(
+    [fx.cachedRemux4k, fx.uncachedDeadP2P, fx.fake4k],
+    ctx,
+  );
+  const byTitle = Object.fromEntries(
+    eligible.map(c => [String(c.stream.title || c.stream.name).slice(0, 24), prunePriority(c)]),
+  );
+  const remux = eligible.find(c => c.stream === fx.cachedRemux4k);
+  const dead = eligible.find(c => c.stream === fx.uncachedDeadP2P);
+  assert.ok(remux && dead, 'fixtures should remain eligible');
+  assert.ok(prunePriority(remux) > prunePriority(dead), byTitle);
+});
+
+test('feature prune bounds overload without changing survivor ranking math', () => {
+  const ctx = pipelineContext('everything');
+  const rows = [fx.cachedRemux4k, ...syntheticCandidates(MAX_RANKER_CANDIDATES + 80)];
+  const { eligible } = applyEligibility(rows, ctx);
+  assert.ok(eligible.length > MAX_RANKER_CANDIDATES);
+
+  const { candidates: bounded, pruned } = pruneEligibleCandidates(eligible);
+  assert.equal(bounded.length, MAX_RANKER_CANDIDATES);
+  assert.equal(pruned, eligible.length - MAX_RANKER_CANDIDATES);
+  assert.ok(bounded.some(c => c.stream === fx.cachedRemux4k), 'strong remux must survive admission');
+
+  // Per-provider fairness floor still holds under overload.
+  const counts = new Map();
+  for (const candidate of bounded) {
+    const key = candidate.features.providerId || 'unknown';
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  for (const [providerId, count] of counts) {
+    assert.ok(count >= MIN_PER_PROVIDER_KEEP, `${providerId} kept ${count}`);
+  }
+
+  // Final selected order among survivors is still baseScore→dedup→select, not prunePriority.
+  const result = rankAndSelect(rows, ctx);
+  assert.ok(result.diagnostics.prunedCandidates > 0);
+  const shuffled = rankAndSelect(shuffle(rows, 99), ctx);
+  assert.deepEqual(
+    result.selected.map(r => r.locatorHash),
+    shuffled.selected.map(r => r.locatorHash),
+  );
 });
