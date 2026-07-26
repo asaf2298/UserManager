@@ -185,9 +185,9 @@ test('streamEngine exports the plan §3 surface and stamps provenance versions',
     resolvedCtx: null,
     queryHint: '',
   });
-  assert.ok(plan.plan.some(e => e.queryMode === QUERY_MODE.CANONICAL_ID));
-  assert.ok(plan.plan.some(e => e.queryMode === QUERY_MODE.PRIMARY_TITLE));
-  assert.ok(plan.plan.every(e => e.phase === 'immediate' || e.phase === 'deferred'));
+  assert.ok(plan.plan.some(e => e.queryMode === QUERY_MODE.CANONICAL_ID && e.phase === 't0'));
+  assert.ok(plan.plan.some(e => e.queryMode === QUERY_MODE.PRIMARY_TITLE && e.phase === 'immediate'));
+  assert.ok(plan.plan.every(e => e.phase === 't0' || e.phase === 'immediate' || e.phase === 'deferred'));
 
   assert.equal(MODEL_VERSION, 'rank-v2.0');
   assert.equal(PARSER_VERSION, 'release-v2');
