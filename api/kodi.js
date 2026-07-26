@@ -46,17 +46,7 @@ export default async function handler(req, res) {
     // Kodi plays direct URLs only; magnet-only rows are dropped after ranking so
     // they still participate in dedup and never resurface as duplicates.
     const playable = result.selected.filter(candidate => candidate.stream.url);
-
-    const results = playable.map(candidate => {
-      const features = candidate.features;
-      const bytes = features.release.size.bytes;
-      return {
-        title: String(candidate.stream.title || candidate.stream.name || 'Unknown').replace(/\n/g, ' ').trim(),
-        url: candidate.stream.url,
-        quality: QUALITY_LABELS[features.release.resolution.value] ?? 'SD',
-        sizeGB: Number.isFinite(bytes) && bytes > 0 ? Number((bytes / 1024 ** 3).toFixed(2)) : null,
-      };
-    });
+    const results = formatKodiResults(playable);
 
     console.log(
       `[ESAY KODI] 🎛️ ${imdb_id} → ranked=${result.diagnostics.eligibleCount}` +
@@ -73,4 +63,18 @@ export default async function handler(req, res) {
     console.error('KODI ENDPOINT ERROR:', error);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
+}
+
+/** Shape selected candidates into the stable Kodi plugin JSON contract. */
+export function formatKodiResults(playable) {
+  return playable.map(candidate => {
+    const features = candidate.features;
+    const bytes = features.release.size.bytes;
+    return {
+      title: String(candidate.stream.title || candidate.stream.name || 'Unknown').replace(/\n/g, ' ').trim(),
+      url: candidate.stream.url,
+      quality: QUALITY_LABELS[features.release.resolution.value] ?? 'SD',
+      sizeGB: Number.isFinite(bytes) && bytes > 0 ? Number((bytes / 1024 ** 3).toFixed(2)) : null,
+    };
+  });
 }
