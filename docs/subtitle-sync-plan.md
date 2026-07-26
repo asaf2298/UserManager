@@ -1,80 +1,118 @@
-# Subtitle auto-sync — deferred plan
+# Subtitle auto-sync — embedded reference alignment
 
-Status: **saved for later** (not implemented).  
-Goal: auto-sync external subs to the video **in the background**, and offer a synced track on the **next play** (never block first play).
+Status: **implemented**. Always on; no feature flag.
+
+Goal: retime an existing Hebrew subtitle to the exact cut being played, using the
+movie's **own embedded subtitles** as the timing reference.
+
+## Why embedded, not audio
+
+The file's embedded subtitles are already aligned to this specific cut, so they
+are a stronger anchor than audio analysis and dramatically cheaper — no Whisper,
+no `ffsubsync`, no GPU. On a 1 GB droplet that difference decides whether the
+feature is viable at all.
+
+If a file has no extractable **text** subtitle track, sync fails honestly rather
+than guessing. Bitmap subtitles (PGS/VobSub) are the one hard exclusion, because
+`alass` needs text.
 
 ## Product flow
 
-1. **First play:** Personal returns the normal subtitle list (current behavior).
-2. **Background job:** if video audio is reachable and a target subtitle is chosen → `ffmpeg` + `ffsubsync` / `alass` → compute `offsetMs`.
-3. **Cache:** store `offsetMs` keyed by `videoHash` (or TorBox file id) + subtitle fingerprint.
-4. **Next play:** add a track like `עברית (מסונכרן)` served via sub-proxy with that offset.
+1. **First subtitle list** already contains up to four `סנכרן כתבויות` tracks:
+   the top two non-auto Hebrew subtitles × two reference slots (`official`,
+   `english`). Listing them costs nothing.
+2. **Selecting one starts the work.** Nothing heavy runs on a list request.
+3. **While pending**, the same URL serves a one-cue subtitle reading
+   `please wait one minute and reselect to sync`, so the player shows status
+   instead of an error.
+4. **After the job finishes**, that same URL serves the aligned SRT. The viewer
+   toggles the track off/on (or reselects it) to pick up the result.
 
-Show the synced option **only when the cache is ready**. Never block or fail the first subtitle list waiting on sync.
+Terminal messages are exact:
+
+| State | On-screen text |
+| --- | --- |
+| pending / running | `please wait one minute and reselect to sync` |
+| no usable text track | `no available embedded subtitles` |
+| other terminal failure | `sorry couldnt sync` |
+
+`/api/sub-sync` responds `Cache-Control: no-store`, otherwise a player could cache
+the wait cue over the finished subtitle.
+
+## Identifying the playing file
+
+Stremio never tells an addon which stream was clicked, and subtitle requests do
+not carry the playback URL. So the stream handler records what it just offered:
+
+```
+stream list → personal_stream_sightings (2h TTL, HTTP locators only)
+subtitle request extras → match a sighting → playable URL for the worker
+```
+
+Match order is strongest evidence first: `videoHash`, then `filename + videoSize`,
+then `filename`, then `videoSize`. An ambiguous weak match is reported as a miss —
+syncing the wrong file is worse than not offering sync.
+
+Machine-translated tracks stay visible as normal options but are never used as
+alignment **bases**: perfectly timing a bad translation just produces well-timed
+nonsense.
+
+## Reference track selection
+
+All text tracks are ranked; none are discarded. Forced, SDH/HI, commentary, signs,
+and song tracks rank lower but remain eligible, because a forced track is still
+valid timing evidence when it is the only match for the target language.
+
+```
+score = 0.65 × languageMatch + 0.25 × cueCoverage + 0.10 × normality
+cueCoverage = clip(cueCount / (runtimeMinutes × 8), 0, 1)
+normality   = dialogue 1.00 | forced 0.80 | SDH/HI 0.75 | commentary/signs/songs 0.60
+```
+
+- `official` slot targets the TMDB production language (`original_language`).
+- `english` slot targets English, falling back to the best remaining track.
+- Cue counts come from actually extracting shortlisted candidates, because
+  `ffprobe` cannot distinguish a 40-cue forced track from a full dialogue track.
+- One usable track means the second slot reports `no available embedded subtitles`.
+
+`alass` runs subtitle-to-subtitle and the **rewritten SRT** is stored, not a single
+global offset, so non-linear drift is corrected too.
 
 ## Architecture
 
 | Piece | Role |
 | --- | --- |
-| **Personal (Vercel)** | List subtitles; serve shifted SRT (`/api/sub-proxy?offsetMs=…`) |
-| **Docker worker (1 GB OK if single-job, slow)** | Sync only — no local LLM/Whisper required for v1 |
-| **Optional later** | Gemini API to pick the “first real dialogue” cue (text only) |
-| **TorBox** | Video/audio **source** (`requestdl` / stream URL) — **cannot** attach/upload an SRT via API; stream API only selects **embedded** tracks |
+| `api/subtitles.js` | ranks addon subtitles; injects up to 4 sync tracks |
+| `api/sub-sync.js` | state read + at most one enqueue; serves wait/ready/failure |
+| `lib/subtitleSync.js` | state machine, cache/job lookups, track ranking |
+| `lib/streamSighting.js` | records offered files; matches subtitle extras back |
+| `worker/media-intelligence/` | `ffprobe` → extract → `alass` → store |
+| `api/sub-proxy.js` | unchanged: UTF-8 re-encoding only, no `offsetMs` |
 
-```
-First play → normal subs + enqueue sync job
-                ↓
-     Docker: ffmpeg → ffsubsync/alass → offsetMs
-                ↓
-     Cache (SQLite / Redis / files)
-                ↓
-Next play → Personal lists “synced” track → sub-proxy applies offset
-```
+Supabase tables: `personal_subtitle_sync_jobs`, `personal_subtitle_sync`,
+`personal_stream_sightings` (all service-role only).
 
-## Explicit non-goals (for now)
+## Worker limits
 
-- Instant one-click “press when you hear the word” inside Stremio
-- Stable Audio / Qwen TTS / other **generators** used as sync tools
-- Dedicated GPU server (overkill for ffsubsync)
-- Paying for more than 1 GB RAM unless an MVP proves it is worth it
+Shares a 1 CPU / 1 GB droplet with the Telegram→Stremio addon, so playback always
+wins:
 
-## Constraints and risks
+- subtitle concurrency **1**; container capped at 640 MiB / 0.8 CPU
+- timeouts: `ffprobe` 30s, extraction 90s, `alass` 120s, total job 240s
+- only the opening ~900s of video is downloaded
+- max 3 real attempts with 60s / 5m / 30m backoff; job TTL 24h
+- while `personal_host_busy` is leased, no job starts; an in-flight job aborts,
+  requeues, and **does not** consume an attempt
+- aborts terminate the exact child PID this job spawned, never by process name
+- TorBox/CDN playback does not set the lease and does not pause sync, by design
 
-1. **Biggest blocker:** getting **HTTP-accessible audio** for the file actually being played (Stremio subtitle requests do not include playback time or a reliable stream URL by default).
-2. **1 GB RAM:** fragile/slow; one job at a time; cache aggressively; prefer opening minutes over full-file when possible.
-3. **Wrong subtitle file** stays wrong after sync — the user still chooses the base track; sync only shifts timing.
-4. Different cuts / frame rates / drift can still defeat a single global offset.
-5. TorBox Pro stream APIs select embedded subs only — external synced SRTs stay on Personal/proxy.
+## Explicit non-goals
 
-## What TorBox can and cannot do
-
-| Goal | TorBox API |
-| --- | --- |
-| Attach my external SRT to their stored file | No |
-| Choose an embedded subtitle in their HLS stream | Yes (`chosen_subtitle_index`, Pro) |
-| Download/stream their file for local sync | Yes (typical debrid / `requestdl` flow) |
-| OpenSubtitles hash / size for matching | Available in stream metadata |
-
-## v1 checklist
-
-- [ ] Sub-proxy `offsetMs` SRT rewrite
-- [ ] Worker: opener or full-file `ffsubsync` / `alass`
-- [ ] Cache store (SQLite / Redis / files)
-- [ ] Trigger after first play / when `videoHash` (or file id) is known
-- [ ] “Synced” track in subtitle list on cache hit
-- [ ] TorBox (or similar) download URL path tested
-- [ ] Single-concurrency + timeout guards on 1 GB droplet
+Audio sync; in-player tap-to-sync; TTS or audio generators; GPU; attaching an
+external SRT to TorBox (their API cannot); blocking sync during TorBox playback;
+feeding sync outcomes back into stream ranking.
 
 ## Reference tools
 
-- [subsyncarr](https://github.com/johnpc/subsyncarr) — library batch pattern (scan disk); idea to steal, not a drop-in for Stremio streams
-- [ffsubsync](https://github.com/smacke/ffsubsync)
-- [alass](https://github.com/kaegi/alass)
-- [TorBox API docs](https://api-docs.torbox.app/) — file access, not subtitle attach
-
-## Decision summary
-
-**Best UX for this stack:** sync in the background, offer on next play.  
-**Best v1 engines:** `ffmpeg` + `ffsubsync`/`alass` + cache.  
-**Skip for sync:** audio generators (Stable Audio), TTS (Qwen VoiceDesign), “AI text alone = timestamp.”  
-**Gemini (optional):** prepare search/dialogue-cue text only; timing still comes from audio alignment.
+- [alass](https://github.com/kaegi/alass) — subtitle-to-subtitle alignment, handles drift
+- [TorBox API](https://api-docs.torbox.app/) — file access only; cannot attach subtitles

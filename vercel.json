@@ -12,7 +12,8 @@
     { "source": "/:user/subtitles/:type/:id.json", "destination": "/api/subtitles" },
     { "source": "/:user/subtitles/:type/:id", "destination": "/api/subtitles" },
     { "source": "/:user/subtitles/:type/:id/:extra*.json", "destination": "/api/subtitles" },
-    { "source": "/:user/subtitles/:type/:id/:extra*", "destination": "/api/subtitles" }
+    { "source": "/:user/subtitles/:type/:id/:extra*", "destination": "/api/subtitles" },
+    { "source": "/:user/sub-sync", "destination": "/api/sub-sync" }
   ],
   "headers": [
     {

@@ -1,0 +1,368 @@
+/**
+ * Embedded-reference subtitle alignment.
+ *
+ * The movie's own embedded subtitles are the timing reference: they are already
+ * aligned to this exact cut, which makes them a far better anchor than audio
+ * analysis and vastly cheaper on a 1 GB box. There is no audio path at all — a
+ * file with no extractable text track fails honestly with `no_embeds`.
+ *
+ * Pipeline: ffprobe → rank text tracks → extract reference → fetch Hebrew base →
+ * alass → store the rewritten SRT.
+ *
+ * Every external process is spawned with an explicit timeout and a known PID so a
+ * Telegram lease can terminate exactly this job's child and nothing else.
+ */
+import { spawn } from 'node:child_process';
+import { mkdtemp, readFile, writeFile, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import fetch from 'node-fetch';
+import { selectRows, updateRows, insertRows } from '../../lib/supabaseServer.js';
+import {
+  rankEmbeddedTracks, REFERENCE_SLOT, JOB_STATUS, FAIL_REASON,
+} from '../../lib/subtitleSync.js';
+import { countSubtitleCues, decodeSubtitleBuffer } from '../../lib/subtitleUtils.js';
+import { BITMAP_SUBTITLE_CODECS } from '../../lib/releaseParser.js';
+import { getContentMeta } from '../../lib/search.js';
+import { MODEL_VERSION } from '../../lib/versions.js';
+import { LIMITS, WORKER_ID, log } from './config.mjs';
+
+const JOBS_TABLE = 'personal_subtitle_sync_jobs';
+const CACHE_TABLE = 'personal_subtitle_sync';
+
+/** Raised when the Telegram lease activates mid-job. Not a real failure. */
+export class BusyAbortError extends Error {
+  constructor() {
+    super('aborted: host busy');
+    this.name = 'BusyAbortError';
+  }
+}
+
+/**
+ * Spawn a child process with a hard timeout, exposing its PID so the caller can
+ * terminate precisely this process rather than pattern-killing by name.
+ */
+function run(command, args, { timeoutMs, onSpawn }) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 5000);
+    }, timeoutMs);
+
+    if (onSpawn) onSpawn(child);
+    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (timedOut) return reject(new Error(`${command} timed out after ${timeoutMs}ms`));
+      if (code !== 0) return reject(new Error(`${command} exited ${code}: ${stderr.slice(0, 300)}`));
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
+/**
+ * Probe subtitle streams.
+ *
+ * Nothing textual is discarded: forced, SDH, commentary, and signs tracks all stay
+ * eligible and are merely ranked lower. Bitmap formats (PGS/VobSub) are the single
+ * hard exclusion because alass needs text, not images.
+ */
+export async function probeSubtitleTracks(sourceUrl, { onSpawn } = {}) {
+  const { stdout } = await run('ffprobe', [
+    '-v', 'error',
+    '-select_streams', 's',
+    '-show_entries', 'stream=index,codec_name,disposition:stream_tags=language,title,handler_name',
+    '-of', 'json',
+    sourceUrl,
+  ], { timeoutMs: LIMITS.ffprobeTimeoutMs, onSpawn });
+
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new Error('ffprobe returned unparseable JSON');
+  }
+
+  return (parsed.streams || []).map((stream, order) => {
+    const tags = stream.tags || {};
+    const disposition = stream.disposition || {};
+    const descriptor = `${tags.title || ''} ${tags.handler_name || ''}`.toLowerCase();
+    const codec = String(stream.codec_name || '').toLowerCase();
+
+    return {
+      index: Number.isFinite(stream.index) ? stream.index : order,
+      order,
+      codec,
+      isText: !BITMAP_SUBTITLE_CODECS.has(codec),
+      language: (tags.language || '').toLowerCase().slice(0, 3) || null,
+      title: tags.title || null,
+      isForced: !!disposition.forced || /\bforced\b/.test(descriptor),
+      isSdh: /\bsdh\b/.test(descriptor),
+      isHearingImpaired: !!disposition.hearing_impaired || /\bhi\b|hearing/.test(descriptor),
+      isCommentary: !!disposition.comment || /commentar/.test(descriptor),
+      isSigns: /\bsigns?\b|\bsongs?\b/.test(descriptor),
+      isSongs: /\bsongs?\b|\blyrics?\b/.test(descriptor),
+      isDescription: /descript|narration|audio\s*desc/.test(descriptor),
+      cueCount: null,
+    };
+  });
+}
+
+/** Extract one embedded subtitle stream to SRT text. */
+async function extractTrack(sourceUrl, trackIndex, workDir, { onSpawn }) {
+  const output = path.join(workDir, `ref_${trackIndex}.srt`);
+  await run('ffmpeg', [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    // Only the opening window is needed to establish offset/drift, which keeps the
+    // download far below the temp-disk budget on large remuxes.
+    '-t', String(LIMITS.probeWindowSeconds),
+    '-i', sourceUrl,
+    '-map', `0:${trackIndex}`,
+    '-c:s', 'srt',
+    output,
+  ], { timeoutMs: LIMITS.extractTimeoutMs, onSpawn });
+
+  const info = await stat(output).catch(() => null);
+  if (!info || info.size === 0) throw new Error(`track ${trackIndex} produced no text`);
+  return { file: output, text: await readFile(output, 'utf8') };
+}
+
+/**
+ * Choose the reference track for a slot.
+ *
+ * Cue counts come from actually extracting candidates, because ffprobe cannot tell
+ * a 40-cue forced track from a full dialogue track. Extraction is capped to the
+ * few most promising candidates to bound cost.
+ */
+async function selectReference(sourceUrl, tracks, { slot, officialLanguage, runtimeMinutes, workDir, onSpawn }) {
+  const textTracks = tracks.filter(t => t.isText);
+  if (!textTracks.length) return null;
+
+  const provisional = rankEmbeddedTracks(textTracks, { slot, officialLanguage, runtimeMinutes });
+  const shortlist = provisional.slice(0, 3);
+
+  const extracted = [];
+  for (const track of shortlist) {
+    try {
+      const result = await extractTrack(sourceUrl, track.index, workDir, { onSpawn });
+      extracted.push({ ...track, cueCount: countSubtitleCues(result.text), file: result.file, text: result.text });
+    } catch (err) {
+      if (err instanceof BusyAbortError) throw err;
+      log('subtitle', `track ${track.index} extraction failed: ${err.message}`);
+    }
+  }
+  if (!extracted.length) return null;
+
+  const reranked = rankEmbeddedTracks(extracted, { slot, officialLanguage, runtimeMinutes });
+  const best = reranked[0];
+  return extracted.find(t => t.index === best.index) || extracted[0];
+}
+
+/** Fetch the Hebrew base subtitle and normalize it to UTF-8. */
+async function fetchBaseSubtitle(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'text/plain,*/*' },
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`base subtitle HTTP ${response.status}`);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const text = decodeSubtitleBuffer(buffer);
+    if (!text || countSubtitleCues(text) === 0) throw new Error('base subtitle has no cues');
+    return text;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Align the base subtitle to the reference with alass.
+ * alass handles non-linear drift, so the stored output is a rewritten SRT rather
+ * than a single global offset.
+ */
+async function alignWithAlass(referenceFile, baseFile, workDir, { onSpawn }) {
+  const output = path.join(workDir, 'synced.srt');
+  await run('alass', [referenceFile, baseFile, output], {
+    timeoutMs: LIMITS.alassTimeoutMs,
+    onSpawn,
+  });
+  const text = await readFile(output, 'utf8');
+  if (!text || countSubtitleCues(text) === 0) throw new Error('alass produced no cues');
+  return text;
+}
+
+/** Claim the oldest runnable job. */
+export async function claimSubtitleJob() {
+  const nowIso = new Date().toISOString();
+  const params = new URLSearchParams({
+    select: 'id,video_key,content_type,content_id,sub_fingerprint,base_sub_url,reference_slot,playable_url,attempts',
+    status: 'eq.queued',
+    expires_at: `gt.${nowIso}`,
+    order: 'created_at.asc',
+    limit: '1',
+  });
+  const rows = await selectRows(JOBS_TABLE, params, 1500);
+  if (!Array.isArray(rows) || !rows.length) return null;
+
+  const job = rows[0];
+  const claim = await updateRows(
+    JOBS_TABLE,
+    new URLSearchParams({ id: `eq.${job.id}`, status: 'eq.queued' }),
+    { status: JOB_STATUS.RUNNING, locked_at: nowIso, locked_by: WORKER_ID, updated_at: nowIso },
+    2000,
+  );
+  // Empty representation means another worker won the race.
+  if (!claim.ok || (Array.isArray(claim.data) && claim.data.length === 0)) return null;
+  return job;
+}
+
+async function finishJob(jobId, patch) {
+  await updateRows(
+    JOBS_TABLE,
+    new URLSearchParams({ id: `eq.${jobId}` }),
+    { ...patch, updated_at: new Date().toISOString() },
+    2000,
+  );
+}
+
+/** Requeue without consuming an attempt — a yield is not a failure. */
+export async function requeueJob(jobId) {
+  await finishJob(jobId, {
+    status: JOB_STATUS.QUEUED,
+    locked_at: null,
+    locked_by: null,
+    fail_reason: FAIL_REASON.BUSY_ABORTED,
+  });
+}
+
+/**
+ * Process one alignment job.
+ *
+ * @param {object} job claimed job row
+ * @param {{ isAborted:()=>boolean, registerChild:(child)=>void }} control
+ */
+export async function processSubtitleJob(job, control) {
+  const workDir = await mkdtemp(path.join(tmpdir(), 'subsync-'));
+  const startedAt = Date.now();
+  const onSpawn = (child) => {
+    control.registerChild(child);
+    if (control.isAborted()) child.kill('SIGTERM');
+  };
+  const checkAbort = () => {
+    if (control.isAborted()) throw new BusyAbortError();
+  };
+
+  try {
+    if (!job.playable_url) {
+      await finishJob(job.id, { status: JOB_STATUS.FAILED, fail_reason: FAIL_REASON.NO_URL, attempts: (job.attempts || 0) + 1 });
+      return { ok: false, reason: FAIL_REASON.NO_URL };
+    }
+
+    checkAbort();
+    const meta = job.content_id ? await getContentMeta(job.content_type || 'movie', job.content_id).catch(() => null) : null;
+    const officialLanguage = meta?.originalLanguage || 'en';
+    const runtimeMinutes = meta?.runtimeMin || null;
+
+    checkAbort();
+    let tracks;
+    try {
+      tracks = await probeSubtitleTracks(job.playable_url, { onSpawn });
+    } catch (err) {
+      if (err instanceof BusyAbortError) throw err;
+      await finishJob(job.id, {
+        status: JOB_STATUS.FAILED, fail_reason: FAIL_REASON.PROBE_FAILED, attempts: (job.attempts || 0) + 1,
+      });
+      return { ok: false, reason: FAIL_REASON.PROBE_FAILED, error: err.message };
+    }
+
+    const textTracks = tracks.filter(t => t.isText);
+    if (!textTracks.length) {
+      // Terminal: no retry will conjure a text track into this file.
+      await finishJob(job.id, {
+        status: JOB_STATUS.FAILED, fail_reason: FAIL_REASON.NO_EMBEDS, attempts: LIMITS.maxAttempts,
+      });
+      return { ok: false, reason: FAIL_REASON.NO_EMBEDS };
+    }
+
+    checkAbort();
+    const reference = await selectReference(job.playable_url, tracks, {
+      slot: job.reference_slot || REFERENCE_SLOT.OFFICIAL,
+      officialLanguage,
+      runtimeMinutes,
+      workDir,
+      onSpawn,
+    });
+    if (!reference) {
+      await finishJob(job.id, {
+        status: JOB_STATUS.FAILED, fail_reason: FAIL_REASON.NO_EMBEDS, attempts: LIMITS.maxAttempts,
+      });
+      return { ok: false, reason: FAIL_REASON.NO_EMBEDS };
+    }
+
+    checkAbort();
+    const baseText = await fetchBaseSubtitle(job.base_sub_url);
+    const baseFile = path.join(workDir, 'base.srt');
+    await writeFile(baseFile, baseText, 'utf8');
+
+    checkAbort();
+    const syncedText = await alignWithAlass(reference.file, baseFile, workDir, { onSpawn });
+
+    await insertRows(CACHE_TABLE, [{
+      video_key: job.video_key,
+      sub_fingerprint: job.sub_fingerprint,
+      reference_slot: job.reference_slot,
+      ref_fingerprint: `track:${reference.index}`,
+      synced_srt: syncedText,
+      method: 'embedded_alass',
+      ref_lang: reference.language,
+      ref_track_index: reference.index,
+      cue_count: countSubtitleCues(syncedText),
+      model_version: MODEL_VERSION,
+    }], {
+      onConflict: 'video_key,sub_fingerprint,reference_slot',
+      merge: true,
+      timeoutMs: 8000,
+    });
+
+    await finishJob(job.id, { status: JOB_STATUS.DONE, fail_reason: null });
+    log('subtitle', `aligned job ${job.id} in ${Date.now() - startedAt}ms`, {
+      slot: job.reference_slot,
+      refTrack: reference.index,
+      refLang: reference.language,
+      cues: countSubtitleCues(syncedText),
+    });
+    return { ok: true, refTrack: reference.index };
+  } catch (err) {
+    if (err instanceof BusyAbortError) {
+      await requeueJob(job.id);
+      log('subtitle', `job ${job.id} yielded to Telegram playback and was requeued`);
+      return { ok: false, reason: FAIL_REASON.BUSY_ABORTED };
+    }
+    const attempts = (job.attempts || 0) + 1;
+    const timedOut = /timed out/i.test(err.message);
+    await finishJob(job.id, {
+      status: attempts >= LIMITS.maxAttempts ? JOB_STATUS.FAILED : JOB_STATUS.QUEUED,
+      fail_reason: timedOut ? FAIL_REASON.TIMEOUT : FAIL_REASON.ALIGN_FAILED,
+      attempts,
+      locked_at: null,
+      locked_by: null,
+    });
+    log('subtitle', `job ${job.id} failed (attempt ${attempts}): ${err.message}`);
+    return { ok: false, reason: FAIL_REASON.ALIGN_FAILED, error: err.message };
+  } finally {
+    await rm(workDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
