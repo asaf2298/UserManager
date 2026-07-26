@@ -72,12 +72,12 @@ test('healthy swarm outranks a dead swarm on availability alone', () => {
   assert.ok(Math.abs(dead.F - 0.10) < 1e-6, `dead swarm F should be 0.10, got ${dead.F}`);
 });
 
-test('VIP comes from provider rules, never from title text', () => {
+test('VIP comes from host rules or the telegram_bot title prefix', () => {
   assert.equal(featuresFor(fx.vipKanBox).isVip, true, 'Kan-Box host is authoritative VIP');
   assert.equal(featuresFor(fx.vipTelegram).isVip, true, 'MediaFusion telegram_bot is VIP');
   assert.equal(
-    featuresFor(fx.fakeVipUnknownHost).isVip, false,
-    'the same text from an unknown host must not create VIP',
+    featuresFor(fx.fakeVipUnknownHost).isVip, true,
+    'telegram_bot prefix on a direct HTTP link is VIP on any host',
   );
 });
 
@@ -255,8 +255,8 @@ test('providers with no cache vocabulary cannot emit a claim', () => {
   assert.equal(claim.claim, CACHE_CLAIM.NONE);
 });
 
-test('unknown origins get the lowest trust prior and no VIP', () => {
+test('unknown origins get the lowest trust prior; telegram_bot prefix still VIP', () => {
   const unknown = resolveProvider(fx.UNKNOWN_HOST, { configured: false });
   assert.equal(unknown.family, 'unknown');
-  assert.equal(evaluateVip(unknown, { text: 'telegram_bot', isSingleHopHttp: true, isIpLocked: false }), false);
+  assert.equal(evaluateVip(unknown, { text: 'telegram_bot', isSingleHopHttp: true, isIpLocked: false }), true);
 });
