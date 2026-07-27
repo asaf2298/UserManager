@@ -37,13 +37,14 @@ Non-playable “notice” rows from upstreams are dropped (Yuki `[YS INFO]` / `[
 * Embedded text references only (no audio / Whisper / `ffsubsync` / `offsetMs`). Worker yields on Telegram `personal_host_busy`; TorBox playback does not block sync.
 
 ### Israeli catalogs (Kan-Box)
-All Kan-Box catalogs are advertised in the Personal manifest:
+All Kan-Box catalogs are advertised in the Personal manifest, except Dragon Ball which is absorbed into the unified **אנימה** catalogs:
 
 1. **ערוצים חיים** (`Live_TV_Channels`) — first
 2. Unified search catalogs (`חיפוש משולב*`)
-3. Remaining IL VOD / podcast / Dragon Ball rows (prefixed `IL - ` when needed)
+3. **אנימה** (`esay_anime_series` / `esay_anime_movie`) — required genre picker; routes Dragon Ball genres to Kan-Box `dbz_*` and all other genres to AnimeIL (from `ADDON_URLS`)
+4. Remaining IL VOD / podcast rows (prefixed `IL - ` when needed)
 
-**Board vs Discover:** Stremio Board only loads catalogs with no *required* extras. Dragon Ball (`dbz_movies_catalog`, `dbz_series_catalog`) keep a required `genre` extra so they appear in **Discover** but not on the **Board**. Everything else remains on both.
+**Board vs Discover:** Stremio Board only loads catalogs with no *required* extras. The anime catalogs require `genre`, so they appear in **Discover** but not on the **Board**. Everything else remains on both.
 
 Catalog `search` extras on Kan-Box rows are stripped so Stremio search goes through Personal’s unified search instead.
 

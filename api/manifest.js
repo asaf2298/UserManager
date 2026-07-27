@@ -1,10 +1,7 @@
 import fetch from 'node-fetch';
 import {
-    ESAY_ANIME_MOVIE_ID,
-    ESAY_ANIME_SERIES_ID,
     DBZ_CATALOG_IDS,
-    buildAnimeGenreOptions,
-    findAnimeilBaseUrl,
+    buildEsayAnimeCatalogs,
 } from '../lib/animeCatalog.js';
 import { YASTREAM_MANIFEST_PREFIXES } from '../lib/yastream.js';
 
@@ -17,15 +14,6 @@ async function fetchWithTimeout(url, options, timeoutMs) {
         clearTimeout(timeoutId);
     }
 }
-
-/**
- * Kan-Box catalogs kept in Discovery but hidden from Board by marking a
- * required extra (Stremio Board only loads catalogs with no required extras).
- */
-const BOARD_HIDDEN_KANBOX_IDS = new Set([
-    'dbz_movies_catalog',
-    'dbz_series_catalog',
-]);
 
 /**
  * Prepare a Kan-Box catalog for Personal Board/Discovery.
@@ -45,72 +33,18 @@ function prepareKanboxCatalog(cat, { isLive = false } = {}) {
         ? cat.extra.filter(e => e.name !== 'search')
         : [];
 
-    const prepared = {
+    return {
         ...cat,
         name,
         // Browsable catalogs need a defined extra array even if only search was stripped
         extra: nonSearchExtra.length > 0 ? nonSearchExtra : []
     };
-
-    // Board-hide: require genre so Board skips it; Discover still lists it.
-    // Use a single "הכל" option for both DBZ movies and series (series upstream
-    // otherwise exposes franchise genres that clutter Discover).
-    if (BOARD_HIDDEN_KANBOX_IDS.has(String(cat.id || ''))) {
-        prepared.extra = [
-            ...prepared.extra.filter(e => e.name !== 'genre'),
-            { name: 'genre', isRequired: true, options: ['הכל'] }
-        ];
-    }
-
-    return prepared;
 }
 
-function animeilCatalogGenres(manifest, type) {
-    const cat = manifest?.catalogs?.find(c => c.type === type);
-    const genreExtra = cat?.extra?.find(e => e.name === 'genre');
-    return genreExtra?.options || cat?.genres || [];
-}
-
-async function buildEsayAnimeCatalogs(addonUrls, headers) {
-    const animeilUrl = findAnimeilBaseUrl(addonUrls);
-    let seriesGenres = [];
-    let movieGenres = [];
-
-    if (animeilUrl) {
-        try {
-            const res = await fetchWithTimeout(`${animeilUrl}/manifest.json`, { headers }, 7500);
-            if (res.ok) {
-                const manifest = await res.json();
-                seriesGenres = animeilCatalogGenres(manifest, 'series');
-                movieGenres = animeilCatalogGenres(manifest, 'movie');
-            }
-        } catch (e) {
-            console.error('AnimeIL manifest fetch error:', e.message);
-        }
-    }
-
-    return [
-        {
-            id: ESAY_ANIME_SERIES_ID,
-            type: 'series',
-            name: 'אנימה',
-            extra: [{
-                name: 'genre',
-                isRequired: true,
-                options: buildAnimeGenreOptions(false, seriesGenres),
-            }],
-        },
-        {
-            id: ESAY_ANIME_MOVIE_ID,
-            type: 'movie',
-            name: 'אנימה',
-            extra: [{
-                name: 'genre',
-                isRequired: true,
-                options: buildAnimeGenreOptions(true, movieGenres),
-            }],
-        },
-    ];
+async function fetchAddonManifest(baseUrl, headers) {
+    const res = await fetchWithTimeout(`${baseUrl}/manifest.json`, { headers }, 7500);
+    if (!res.ok) return null;
+    return await res.json();
 }
 
 export default async function handler(req, res) {
@@ -122,7 +56,7 @@ export default async function handler(req, res) {
     const forwardedIps = req.headers['x-forwarded-for'] || '';
     const clientIp = forwardedIps ? forwardedIps.split(',')[0].trim() : (req.socket?.remoteAddress || '');
 
-    const kanboxHeaders = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp };
+    const proxyHeaders = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp };
 
     try {
         const urlParts = req.url.split('?')[0].split('/');
@@ -131,32 +65,38 @@ export default async function handler(req, res) {
         const userConfig = configs[userKey] || { name: 'Unknown' };
         const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
 
+        const tvAddonUrl = (process.env.TV_ADDON_URL || '').replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
+
+        const fetchKanbox = tvAddonUrl
+            ? fetchAddonManifest(tvAddonUrl, proxyHeaders).catch((e) => {
+                console.error('TV Addon fetch error:', e.message);
+                return null;
+            })
+            : Promise.resolve(null);
+
+        const fetchAnime = buildEsayAnimeCatalogs(addonUrls, async (baseUrl) => {
+            try {
+                return await fetchAddonManifest(baseUrl, proxyHeaders);
+            } catch (e) {
+                console.error('AnimeIL manifest fetch error:', e.message);
+                return null;
+            }
+        });
+
+        const [tvManifest, animeCatalogs] = await Promise.all([fetchKanbox, fetchAnime]);
+
         let firstKanboxCatalog = null;
         let restKanboxCatalogs = [];
+        const catalogs = tvManifest?.catalogs || [];
+        if (catalogs.length > 0) {
+            // Prefer Live_TV_Channels as the promoted first row; fall back to catalogs[0]
+            const liveIdx = catalogs.findIndex(c => String(c.id || '') === 'Live_TV_Channels');
+            const liveCat = liveIdx >= 0 ? catalogs[liveIdx] : catalogs[0];
+            firstKanboxCatalog = prepareKanboxCatalog(liveCat, { isLive: true });
 
-        const tvAddonUrl = process.env.TV_ADDON_URL;
-        if (tvAddonUrl) {
-            try {
-                const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-                const tvRes = await fetchWithTimeout(`${cleanTvUrl}/manifest.json`, { headers: kanboxHeaders }, 7500);
-                if (tvRes.ok) {
-                    const tvManifest = await tvRes.json();
-                    const catalogs = tvManifest?.catalogs || [];
-
-                    if (catalogs.length > 0) {
-                        // Prefer Live_TV_Channels as the promoted first row; fall back to catalogs[0]
-                        const liveIdx = catalogs.findIndex(c => String(c.id || '') === 'Live_TV_Channels');
-                        const liveCat = liveIdx >= 0 ? catalogs[liveIdx] : catalogs[0];
-                        firstKanboxCatalog = prepareKanboxCatalog(liveCat, { isLive: true });
-
-                        restKanboxCatalogs = catalogs
-                            .filter(cat => cat !== liveCat && !DBZ_CATALOG_IDS.has(String(cat.id || '')))
-                            .map(cat => prepareKanboxCatalog(cat));
-                    }
-                }
-            } catch (e) {
-                console.error('TV Addon fetch error:', e.message);
-            }
+            restKanboxCatalogs = catalogs
+                .filter(cat => cat !== liveCat && !DBZ_CATALOG_IDS.has(String(cat.id || '')))
+                .map(cat => prepareKanboxCatalog(cat));
         }
 
         const unifiedSearchCatalogs = [
@@ -166,11 +106,9 @@ export default async function handler(req, res) {
             { id: "esay_mixed_search_full", type: "anime", name: " חיפוש משולב - full", extra: [{ name: "search", isRequired: true }] }
         ];
 
-        const animeCatalogs = await buildEsayAnimeCatalogs(addonUrls, kanboxHeaders);
-
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.11.0",
+            version: "2.12.0",
             name: `Personal - ${userConfig.name || userKey}`,
             description: "Personal Aggregator with Unified Search & LiveTV Israel",
             idPrefixes: [
