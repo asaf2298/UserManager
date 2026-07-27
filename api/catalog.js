@@ -1,4 +1,8 @@
 import fetch from 'node-fetch';
+import {
+    isAnimeilCatalog,
+    resolveAnimeilCatalogUrl,
+} from '../lib/animeCatalog.js';
 import { debugLog } from '../lib/debugLog.js';
 import { isYastreamProviderId, rewriteMetaToImdbIfKnown } from '../lib/yastream.js';
 import { resolveProvider, evaluateVip } from '../lib/providerCapabilities.js';
@@ -353,27 +357,39 @@ export default async function handler(req, res) {
         }
 
         // ==========================================
-        // 2. Regular catalogs (Kan-Box / Live TV only)
+        // 2. Catalog proxy (AnimeIL + Kan-Box / Live TV)
         // ==========================================
         let targetUrl = '';
         let requestHeaders = proxyHeaders;
-        const tvCatalogIds = await getTvCatalogIds(tvAddonUrl, proxyHeaders);
+        let proxyBranch = 'tv';
 
-        const isDbzCatalog = cleanCatalogId.startsWith('dbz_');
-
-        if ((reqType === 'tv' || reqType === 'channel') || isDbzCatalog || tvCatalogIds.includes(cleanCatalogId)) {
-            if (!tvAddonUrl) return res.status(404).json({ metas: [] });
-            targetUrl = `${tvAddonUrl}/catalog/${reqType}/${rawCatalogId}${extraPart ? '/' + extraPart : ''}`;
-            requestHeaders = proxyHeaders;
+        if (isAnimeilCatalog(cleanCatalogId)) {
+            const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
+            targetUrl = resolveAnimeilCatalogUrl({
+                catalogId: cleanCatalogId,
+                reqType,
+                extraPart,
+                addonUrls,
+            }) || '';
+            proxyBranch = 'animeil';
+            if (!targetUrl) return res.status(200).json({ metas: [] });
         } else {
-            return res.status(200).json({ metas: [] });
+            const tvCatalogIds = await getTvCatalogIds(tvAddonUrl, proxyHeaders);
+            const isDbzCatalog = cleanCatalogId.startsWith('dbz_');
+
+            if ((reqType === 'tv' || reqType === 'channel') || isDbzCatalog || tvCatalogIds.includes(cleanCatalogId)) {
+                if (!tvAddonUrl) return res.status(404).json({ metas: [] });
+                targetUrl = `${tvAddonUrl}/catalog/${reqType}/${rawCatalogId}${extraPart ? '/' + extraPart : ''}`;
+            } else {
+                return res.status(200).json({ metas: [] });
+            }
         }
 
         debugLog('H2', 'api/catalog.js:proxy', 'catalog proxy attempt', {
             userKey,
             cleanCatalogId,
             reqType,
-            branch: 'tv',
+            branch: proxyBranch,
             targetHost: targetUrl.split('/').slice(0, 3).join('/'),
             hasXff: !!requestHeaders['X-Forwarded-For']
         });

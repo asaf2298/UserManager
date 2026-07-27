@@ -1,4 +1,5 @@
 import fetch from 'node-fetch';
+import { buildAnimeilCatalogs } from '../lib/animeCatalog.js';
 import { YASTREAM_MANIFEST_PREFIXES } from '../lib/yastream.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
@@ -58,6 +59,12 @@ function prepareKanboxCatalog(cat, { isLive = false } = {}) {
     return prepared;
 }
 
+async function fetchAddonManifest(baseUrl, headers) {
+    const res = await fetchWithTimeout(`${baseUrl}/manifest.json`, { headers }, 7500);
+    if (!res.ok) return null;
+    return await res.json();
+}
+
 export default async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -74,33 +81,39 @@ export default async function handler(req, res) {
         const userKey = urlParts[1] || 'default';
         const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
         const userConfig = configs[userKey] || { name: 'Unknown' };
+        const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
+
+        const tvAddonUrl = (process.env.TV_ADDON_URL || '').replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
+
+        const fetchKanbox = tvAddonUrl
+            ? fetchAddonManifest(tvAddonUrl, kanboxHeaders).catch((e) => {
+                console.error('TV Addon fetch error:', e.message);
+                return null;
+            })
+            : Promise.resolve(null);
+
+        const fetchAnimeil = buildAnimeilCatalogs(addonUrls, async (baseUrl) => {
+            try {
+                return await fetchAddonManifest(baseUrl, kanboxHeaders);
+            } catch (e) {
+                console.error('AnimeIL manifest fetch error:', e.message);
+                return null;
+            }
+        });
+
+        const [tvManifest, animeilCatalogs] = await Promise.all([fetchKanbox, fetchAnimeil]);
 
         let firstKanboxCatalog = null;
         let restKanboxCatalogs = [];
+        const catalogs = tvManifest?.catalogs || [];
+        if (catalogs.length > 0) {
+            const liveIdx = catalogs.findIndex(c => String(c.id || '') === 'Live_TV_Channels');
+            const liveCat = liveIdx >= 0 ? catalogs[liveIdx] : catalogs[0];
+            firstKanboxCatalog = prepareKanboxCatalog(liveCat, { isLive: true });
 
-        const tvAddonUrl = process.env.TV_ADDON_URL;
-        if (tvAddonUrl) {
-            try {
-                const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-                const tvRes = await fetchWithTimeout(`${cleanTvUrl}/manifest.json`, { headers: kanboxHeaders }, 7500);
-                if (tvRes.ok) {
-                    const tvManifest = await tvRes.json();
-                    const catalogs = tvManifest?.catalogs || [];
-
-                    if (catalogs.length > 0) {
-                        // Prefer Live_TV_Channels as the promoted first row; fall back to catalogs[0]
-                        const liveIdx = catalogs.findIndex(c => String(c.id || '') === 'Live_TV_Channels');
-                        const liveCat = liveIdx >= 0 ? catalogs[liveIdx] : catalogs[0];
-                        firstKanboxCatalog = prepareKanboxCatalog(liveCat, { isLive: true });
-
-                        restKanboxCatalogs = catalogs
-                            .filter(cat => cat !== liveCat)
-                            .map(cat => prepareKanboxCatalog(cat));
-                    }
-                }
-            } catch (e) {
-                console.error('TV Addon fetch error:', e.message);
-            }
+            restKanboxCatalogs = catalogs
+                .filter(cat => cat !== liveCat)
+                .map(cat => prepareKanboxCatalog(cat));
         }
 
         const unifiedSearchCatalogs = [
@@ -112,7 +125,7 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
-            version: "2.11.0",
+            version: "2.12.0",
             name: `Personal - ${userConfig.name || userKey}`,
             description: "Personal Aggregator with Unified Search & LiveTV Israel",
             idPrefixes: [
@@ -138,6 +151,7 @@ export default async function handler(req, res) {
             catalogs: [
                 ...(firstKanboxCatalog ? [firstKanboxCatalog] : []),
                 ...unifiedSearchCatalogs,
+                ...animeilCatalogs,
                 ...restKanboxCatalogs
             ]
         });
