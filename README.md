@@ -41,7 +41,7 @@ All Kan-Box catalogs are advertised in the Personal manifest:
 
 1. **ערוצים חיים** (`Live_TV_Channels`) — first
 2. Unified search catalogs (`חיפוש משולב*`)
-3. **AnimeIL-TV** movie + series catalogs (genre required — **Discover** only)
+3. **AnimeIL-TV** movie + series catalogs when AnimeIL is in `ADDON_URLS` (genre required — **Discover** only)
 4. Remaining IL VOD / podcast / Dragon Ball rows (prefixed `IL - ` when needed)
 
 **Board vs Discover:** Stremio Board only loads catalogs with no *required* extras. Dragon Ball (`dbz_movies_catalog`, `dbz_series_catalog`) and AnimeIL (`AnimeIL-TV Movies`, `AnimeIL-TV Series`) keep a required `genre` extra so they appear in **Discover** but not on the **Board**. Everything else remains on both.

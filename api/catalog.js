@@ -1,7 +1,7 @@
 import fetch from 'node-fetch';
 import {
+    findAnimeilBaseUrl,
     isAnimeilCatalog,
-    resolveAnimeilCatalogUrl,
 } from '../lib/animeCatalog.js';
 import { debugLog } from '../lib/debugLog.js';
 import { isYastreamProviderId, rewriteMetaToImdbIfKnown } from '../lib/yastream.js';
@@ -358,43 +358,37 @@ export default async function handler(req, res) {
 
         // ==========================================
         // 2. Catalog proxy (AnimeIL + Kan-Box / Live TV)
+        // Same Stremio path shape for every upstream: /catalog/{type}/{id}/{extras}
         // ==========================================
-        let targetUrl = '';
-        let requestHeaders = proxyHeaders;
-        let proxyBranch = 'tv';
+        const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
+        let targetBase = '';
 
         if (isAnimeilCatalog(cleanCatalogId)) {
-            const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
-            targetUrl = resolveAnimeilCatalogUrl({
-                catalogId: cleanCatalogId,
-                reqType,
-                extraPart,
-                addonUrls,
-            }) || '';
-            proxyBranch = 'animeil';
-            if (!targetUrl) return res.status(200).json({ metas: [] });
+            targetBase = findAnimeilBaseUrl(addonUrls) || '';
+            if (!targetBase) return res.status(200).json({ metas: [] });
         } else {
             const tvCatalogIds = await getTvCatalogIds(tvAddonUrl, proxyHeaders);
             const isDbzCatalog = cleanCatalogId.startsWith('dbz_');
-
             if ((reqType === 'tv' || reqType === 'channel') || isDbzCatalog || tvCatalogIds.includes(cleanCatalogId)) {
                 if (!tvAddonUrl) return res.status(404).json({ metas: [] });
-                targetUrl = `${tvAddonUrl}/catalog/${reqType}/${rawCatalogId}${extraPart ? '/' + extraPart : ''}`;
+                targetBase = tvAddonUrl;
             } else {
                 return res.status(200).json({ metas: [] });
             }
         }
 
+        const targetUrl = `${targetBase}/catalog/${reqType}/${rawCatalogId}${extraPart ? '/' + extraPart : ''}`;
+
         debugLog('H2', 'api/catalog.js:proxy', 'catalog proxy attempt', {
             userKey,
             cleanCatalogId,
             reqType,
-            branch: proxyBranch,
+            branch: isAnimeilCatalog(cleanCatalogId) ? 'animeil' : 'tv',
             targetHost: targetUrl.split('/').slice(0, 3).join('/'),
-            hasXff: !!requestHeaders['X-Forwarded-For']
+            hasXff: !!proxyHeaders['X-Forwarded-For']
         });
 
-        const fetchRes = await fetchWithTimeout(targetUrl, { headers: requestHeaders }, 8000);
+        const fetchRes = await fetchWithTimeout(targetUrl, { headers: proxyHeaders }, 8000);
         if (!fetchRes.ok) throw new Error(`HTTP ${fetchRes.status}`);
 
         const data = await fetchRes.json();

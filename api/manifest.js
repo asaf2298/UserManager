@@ -1,5 +1,10 @@
 import fetch from 'node-fetch';
-import { buildAnimeilCatalogs } from '../lib/animeCatalog.js';
+import {
+    findAnimeilBaseUrl,
+    isAnimeilCatalog,
+    requireGenreExtra,
+    stripSearchExtra,
+} from '../lib/animeCatalog.js';
 import { YASTREAM_MANIFEST_PREFIXES } from '../lib/yastream.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
@@ -29,34 +34,34 @@ const BOARD_HIDDEN_KANBOX_IDS = new Set([
 function prepareKanboxCatalog(cat, { isLive = false } = {}) {
     let name = cat.name || cat.id;
     if (isLive) {
-        // User-facing label for Live_TV_Channels
         name = 'ערוצים חיים';
     } else if (!name.includes('Israeli') && !name.startsWith('IL - ')) {
         name = `IL - ${name}`;
     }
 
-    const nonSearchExtra = cat.extra
-        ? cat.extra.filter(e => e.name !== 'search')
-        : [];
-
     const prepared = {
         ...cat,
         name,
-        // Browsable catalogs need a defined extra array even if only search was stripped
-        extra: nonSearchExtra.length > 0 ? nonSearchExtra : []
+        extra: stripSearchExtra(cat.extra),
     };
 
-    // Board-hide: require genre so Board skips it; Discover still lists it.
-    // Use a single "הכל" option for both DBZ movies and series (series upstream
-    // otherwise exposes franchise genres that clutter Discover).
+    // Board-hide DBZ: single "הכל" option (series upstream franchise genres clutter Discover).
     if (BOARD_HIDDEN_KANBOX_IDS.has(String(cat.id || ''))) {
-        prepared.extra = [
-            ...prepared.extra.filter(e => e.name !== 'genre'),
-            { name: 'genre', isRequired: true, options: ['הכל'] }
-        ];
+        prepared.extra = requireGenreExtra(prepared.extra, ['הכל']);
     }
 
     return prepared;
+}
+
+/**
+ * AnimeIL: strip search, require upstream genre options → Discover only.
+ */
+function prepareAnimeilCatalog(cat) {
+    const extras = stripSearchExtra(cat.extra);
+    const genreExtra = extras.find(e => e.name === 'genre');
+    const options = genreExtra?.options || cat.genres || [];
+    if (!options.length) return null;
+    return { ...cat, extra: requireGenreExtra(extras, options) };
 }
 
 async function fetchAddonManifest(baseUrl, headers) {
@@ -74,7 +79,7 @@ export default async function handler(req, res) {
     const forwardedIps = req.headers['x-forwarded-for'] || '';
     const clientIp = forwardedIps ? forwardedIps.split(',')[0].trim() : (req.socket?.remoteAddress || '');
 
-    const kanboxHeaders = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp };
+    const proxyHeaders = { 'User-Agent': clientUA, 'X-Forwarded-For': clientIp };
 
     try {
         const urlParts = req.url.split('?')[0].split('/');
@@ -84,24 +89,23 @@ export default async function handler(req, res) {
         const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
 
         const tvAddonUrl = (process.env.TV_ADDON_URL || '').replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
+        const animeilUrl = findAnimeilBaseUrl(addonUrls);
 
         const fetchKanbox = tvAddonUrl
-            ? fetchAddonManifest(tvAddonUrl, kanboxHeaders).catch((e) => {
+            ? fetchAddonManifest(tvAddonUrl, proxyHeaders).catch((e) => {
                 console.error('TV Addon fetch error:', e.message);
                 return null;
             })
             : Promise.resolve(null);
 
-        const fetchAnimeil = buildAnimeilCatalogs(addonUrls, async (baseUrl) => {
-            try {
-                return await fetchAddonManifest(baseUrl, kanboxHeaders);
-            } catch (e) {
+        const fetchAnimeil = animeilUrl
+            ? fetchAddonManifest(animeilUrl, proxyHeaders).catch((e) => {
                 console.error('AnimeIL manifest fetch error:', e.message);
                 return null;
-            }
-        });
+            })
+            : Promise.resolve(null);
 
-        const [tvManifest, animeilCatalogs] = await Promise.all([fetchKanbox, fetchAnimeil]);
+        const [tvManifest, animeilManifest] = await Promise.all([fetchKanbox, fetchAnimeil]);
 
         let firstKanboxCatalog = null;
         let restKanboxCatalogs = [];
@@ -115,6 +119,11 @@ export default async function handler(req, res) {
                 .filter(cat => cat !== liveCat)
                 .map(cat => prepareKanboxCatalog(cat));
         }
+
+        const animeilCatalogs = (animeilManifest?.catalogs || [])
+            .filter(c => isAnimeilCatalog(c.id))
+            .map(prepareAnimeilCatalog)
+            .filter(Boolean);
 
         const unifiedSearchCatalogs = [
             { id: "esay_mixed_search_movie", type: "movie", name: " חיפוש משולב", extra: [{ name: "search", isRequired: true }] },
