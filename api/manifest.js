@@ -1,4 +1,11 @@
 import fetch from 'node-fetch';
+import {
+    ESAY_ANIME_MOVIE_ID,
+    ESAY_ANIME_SERIES_ID,
+    DBZ_CATALOG_IDS,
+    buildAnimeGenreOptions,
+    findAnimeilBaseUrl,
+} from '../lib/animeCatalog.js';
 import { YASTREAM_MANIFEST_PREFIXES } from '../lib/yastream.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
@@ -58,6 +65,54 @@ function prepareKanboxCatalog(cat, { isLive = false } = {}) {
     return prepared;
 }
 
+function animeilCatalogGenres(manifest, type) {
+    const cat = manifest?.catalogs?.find(c => c.type === type);
+    const genreExtra = cat?.extra?.find(e => e.name === 'genre');
+    return genreExtra?.options || cat?.genres || [];
+}
+
+async function buildEsayAnimeCatalogs(addonUrls, headers) {
+    const animeilUrl = findAnimeilBaseUrl(addonUrls);
+    let seriesGenres = [];
+    let movieGenres = [];
+
+    if (animeilUrl) {
+        try {
+            const res = await fetchWithTimeout(`${animeilUrl}/manifest.json`, { headers }, 7500);
+            if (res.ok) {
+                const manifest = await res.json();
+                seriesGenres = animeilCatalogGenres(manifest, 'series');
+                movieGenres = animeilCatalogGenres(manifest, 'movie');
+            }
+        } catch (e) {
+            console.error('AnimeIL manifest fetch error:', e.message);
+        }
+    }
+
+    return [
+        {
+            id: ESAY_ANIME_SERIES_ID,
+            type: 'series',
+            name: 'אנימה',
+            extra: [{
+                name: 'genre',
+                isRequired: true,
+                options: buildAnimeGenreOptions(false, seriesGenres),
+            }],
+        },
+        {
+            id: ESAY_ANIME_MOVIE_ID,
+            type: 'movie',
+            name: 'אנימה',
+            extra: [{
+                name: 'genre',
+                isRequired: true,
+                options: buildAnimeGenreOptions(true, movieGenres),
+            }],
+        },
+    ];
+}
+
 export default async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -74,6 +129,7 @@ export default async function handler(req, res) {
         const userKey = urlParts[1] || 'default';
         const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
         const userConfig = configs[userKey] || { name: 'Unknown' };
+        const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
 
         let firstKanboxCatalog = null;
         let restKanboxCatalogs = [];
@@ -94,7 +150,7 @@ export default async function handler(req, res) {
                         firstKanboxCatalog = prepareKanboxCatalog(liveCat, { isLive: true });
 
                         restKanboxCatalogs = catalogs
-                            .filter(cat => cat !== liveCat)
+                            .filter(cat => cat !== liveCat && !DBZ_CATALOG_IDS.has(String(cat.id || '')))
                             .map(cat => prepareKanboxCatalog(cat));
                     }
                 }
@@ -109,6 +165,8 @@ export default async function handler(req, res) {
             { id: "esay_mixed_search_complete", type: "anime", name: " חיפוש משולב - complete", extra: [{ name: "search", isRequired: true }] },
             { id: "esay_mixed_search_full", type: "anime", name: " חיפוש משולב - full", extra: [{ name: "search", isRequired: true }] }
         ];
+
+        const animeCatalogs = await buildEsayAnimeCatalogs(addonUrls, kanboxHeaders);
 
         return res.status(200).json({
             id: `com.esay.${userKey}`,
@@ -138,6 +196,7 @@ export default async function handler(req, res) {
             catalogs: [
                 ...(firstKanboxCatalog ? [firstKanboxCatalog] : []),
                 ...unifiedSearchCatalogs,
+                ...animeCatalogs,
                 ...restKanboxCatalogs
             ]
         });

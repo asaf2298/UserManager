@@ -1,5 +1,13 @@
 import fetch from 'node-fetch';
 import { debugLog } from '../lib/debugLog.js';
+import {
+    ESAY_ANIME_MOVIE_ID,
+    ESAY_ANIME_SERIES_ID,
+    isDbzGenre,
+    isEsayAnimeCatalog,
+    findAnimeilBaseUrl,
+    parseGenreFromExtra,
+} from '../lib/animeCatalog.js';
 import { isYastreamProviderId, rewriteMetaToImdbIfKnown } from '../lib/yastream.js';
 import { resolveProvider, evaluateVip } from '../lib/providerCapabilities.js';
 
@@ -353,7 +361,52 @@ export default async function handler(req, res) {
         }
 
         // ==========================================
-        // 2. Regular catalogs (Kan-Box / Live TV only)
+        // 2. Unified anime catalogs (AnimeIL + Dragon Ball)
+        // ==========================================
+        if (isEsayAnimeCatalog(cleanCatalogId)) {
+            const isMovie = cleanCatalogId === ESAY_ANIME_MOVIE_ID;
+            const genre = parseGenreFromExtra(extraPart);
+            if (!genre) return res.status(200).json({ metas: [] });
+
+            let targetUrl = '';
+            let requestHeaders = proxyHeaders;
+
+            if (isDbzGenre(genre, isMovie)) {
+                if (!tvAddonUrl) return res.status(200).json({ metas: [] });
+                const dbzCatalogId = isMovie ? 'dbz_movies_catalog' : 'dbz_series_catalog';
+                const dbzType = isMovie ? 'movie' : 'series';
+                if (isMovie) {
+                    targetUrl = `${tvAddonUrl}/catalog/${dbzType}/${dbzCatalogId}.json`;
+                } else {
+                    const genreParam = `genre=${encodeURIComponent(genre)}`;
+                    const rest = extraPart
+                        ? extraPart.split('/').filter(p => !p.startsWith('genre=')).join('/')
+                        : '';
+                    targetUrl = `${tvAddonUrl}/catalog/${dbzType}/${dbzCatalogId}.json/${genreParam}${rest ? '/' + rest : ''}`;
+                }
+            } else {
+                const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
+                const animeilUrl = findAnimeilBaseUrl(addonUrls);
+                if (!animeilUrl) return res.status(200).json({ metas: [] });
+                const animeilCatalogId = isMovie ? 'AnimeIL-TV Movies' : 'AnimeIL-TV Series';
+                const animeilType = isMovie ? 'movie' : 'series';
+                targetUrl = `${animeilUrl}/catalog/${animeilType}/${encodeURIComponent(animeilCatalogId)}.json${extraPart ? '/' + extraPart : ''}`;
+            }
+
+            debugLog('H2', 'api/catalog.js:anime', 'anime catalog proxy', {
+                cleanCatalogId,
+                genre,
+                targetHost: targetUrl.split('/').slice(0, 3).join('/'),
+            });
+
+            const fetchRes = await fetchWithTimeout(targetUrl, { headers: requestHeaders }, 8000);
+            if (!fetchRes.ok) throw new Error(`HTTP ${fetchRes.status}`);
+            const data = await fetchRes.json();
+            return res.status(200).json(data);
+        }
+
+        // ==========================================
+        // 3. Regular catalogs (Kan-Box / Live TV only)
         // ==========================================
         let targetUrl = '';
         let requestHeaders = proxyHeaders;
