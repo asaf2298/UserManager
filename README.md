@@ -4,7 +4,7 @@ Vecret (**Personal**, formerly Esay) is a serverless proxy and aggregator for **
 
 Stremio install name: **`Personal - {name}`** (from `USER_CONFIGS`).
 
-Current manifest version: **2.11.0**.
+Current manifest version: **2.12.0**.
 
 ---
 
