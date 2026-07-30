@@ -1,5 +1,4 @@
 import fetch from 'node-fetch';
-import { debugLog } from '../lib/debugLog.js';
 import { findYastreamBaseUrl, isYastreamProviderId } from '../lib/yastream.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
@@ -79,12 +78,6 @@ export default async function handler(req, res) {
             branch = 'none';
         }
 
-        debugLog('H3', 'api/meta.js:start', 'meta request', {
-            userKey, type, id: id.slice(0, 40), branch,
-            targetHost: targetUrl ? targetUrl.split('/').slice(0, 3).join('/') : null,
-            hasXff: !!clientIp
-        });
-
         let result = targetUrl ? await fetchMetaJson(targetUrl, headers, 5000) : { ok: false, status: 0, data: null };
 
         if (result.ok && result.data?.meta) {
@@ -101,11 +94,9 @@ export default async function handler(req, res) {
             return res.status(200).json(data);
         }
 
-        debugLog('H3', 'api/meta.js:miss', 'meta not found', { id: id.slice(0, 40), branch, status: result.status });
         return res.status(404).json({ meta: null });
 
     } catch (error) {
-        debugLog('H3', 'api/meta.js:error', 'meta error', { err: String(error && error.message || error) });
         return res.status(404).json({ meta: null });
     }
 }

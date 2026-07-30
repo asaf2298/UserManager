@@ -1,5 +1,4 @@
 import fetch from 'node-fetch';
-import { debugLog } from '../lib/debugLog.js';
 import { isYastreamProviderId, rewriteMetaToImdbIfKnown } from '../lib/yastream.js';
 import { resolveProvider, evaluateVip } from '../lib/providerCapabilities.js';
 import { MIXED_SEARCH_CATALOG_IDS, MIXED_SEARCH_PREFIX } from '../lib/catalogIds.js';
@@ -303,14 +302,6 @@ export default async function handler(req, res) {
                 `| ${allSearchCatalogs.length} catalogs / ${new Set(allSearchCatalogs.map(c => c.baseUrl)).size} addons`
             );
 
-            // #region agent log
-            debugLog('H-SEARCH', 'api/catalog.js:mixedSearch', 'search budget', {
-                cleanCatalogId, isFull, hardBudgetMs, afterDiscoveryMs, softMs,
-                catalogCount: allSearchCatalogs.length,
-                query: String(extraPart).slice(0, 80)
-            });
-            // #endregion
-
             const searchPromises = allSearchCatalogs.map(cat =>
                 fetchJsonWithTimeout(
                     `${cat.baseUrl}/catalog/${cat.type}/${cat.id}/${extraPart}`,
@@ -344,12 +335,6 @@ export default async function handler(req, res) {
             console.log(
                 `[PERSONAL SEARCH] ✅ ${cleanCatalogId} done in ${afterFanoutMs}ms → ${combinedMetas.length} metas`
             );
-            // #region agent log
-            debugLog('H-SEARCH', 'api/catalog.js:mixedSearch', 'search done', {
-                cleanCatalogId, afterFanoutMs, metas: combinedMetas.length, softMs
-            });
-            // #endregion
-
             return res.status(200).json({ metas: combinedMetas });
         }
 
@@ -370,29 +355,14 @@ export default async function handler(req, res) {
             return res.status(200).json({ metas: [] });
         }
 
-        debugLog('H2', 'api/catalog.js:proxy', 'catalog proxy attempt', {
-            userKey,
-            cleanCatalogId,
-            reqType,
-            branch: 'tv',
-            targetHost: targetUrl.split('/').slice(0, 3).join('/'),
-            hasXff: !!requestHeaders['X-Forwarded-For']
-        });
-
         const fetchRes = await fetchWithTimeout(targetUrl, { headers: requestHeaders }, 8000);
         if (!fetchRes.ok) throw new Error(`HTTP ${fetchRes.status}`);
 
         const data = await fetchRes.json();
-        debugLog('H2', 'api/catalog.js:proxy', 'catalog proxy ok', {
-            cleanCatalogId,
-            metasLength: Array.isArray(data?.metas) ? data.metas.length : -1,
-            upstreamStatus: fetchRes.status
-        });
         return res.status(200).json(data);
 
     } catch (error) {
         console.error(`[PERSONAL CATALOG PROXY ERROR]: ${error.message}`);
-        debugLog('H2', 'api/catalog.js:error', 'catalog proxy error', { err: String(error.message || error) });
         return res.status(200).json({ metas: [] });
     }
 }
