@@ -40,7 +40,7 @@ export default async function handler(req, res) {
     }, 8000);
 
     if (!response.ok) {
-      console.warn(`[ESAY SUB-PROXY] upstream HTTP ${response.status} for ${target.substring(0, 80)}`);
+      console.warn(`[PERSONAL SUB-PROXY] upstream HTTP ${response.status} for ${target.substring(0, 80)}`);
       res.statusCode = 502;
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
       return res.end(JSON.stringify({ error: 'Upstream subtitle fetch failed' }));
@@ -54,7 +54,7 @@ export default async function handler(req, res) {
     res.setHeader('Cache-Control', 'public, max-age=3600');
     return res.end(text);
   } catch (e) {
-    console.error(`[ESAY SUB-PROXY] 💥 ${e.message}`);
+    console.error(`[PERSONAL SUB-PROXY] 💥 ${e.message}`);
     res.statusCode = 500;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     return res.end(JSON.stringify({ error: 'Subtitle proxy error' }));

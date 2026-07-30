@@ -33,7 +33,7 @@ export default async function handler(req, res) {
     const contentId = url.searchParams.get('id') || null;
 
     if (!videoKey || !subFingerprint || !slot || !baseSubUrl) {
-      console.warn('[ESAY SUB-SYNC] ⚠️ missing required params');
+      console.warn('[PERSONAL SUB-SYNC] ⚠️ missing required params');
       res.statusCode = 200;
       return res.end(buildOneCueSrt(SYNC_MESSAGES.FAILED));
     }
@@ -58,7 +58,7 @@ export default async function handler(req, res) {
     });
 
     console.log(
-      `[ESAY SUB-SYNC] ${result.state === SYNC_STATE.READY ? '✅' : '⏳'} state=${result.state}` +
+      `[PERSONAL SUB-SYNC] ${result.state === SYNC_STATE.READY ? '✅' : '⏳'} state=${result.state}` +
       ` slot=${slot} videoKey=${videoKey.slice(0, 18)} sub=${subFingerprint}` +
       ` sighting=${sighting.found ? sighting.strength : `miss:${sighting.reason || 'unknown'}`}`
     );
@@ -66,7 +66,7 @@ export default async function handler(req, res) {
     res.statusCode = 200;
     return res.end(result.body);
   } catch (e) {
-    console.error(`[ESAY SUB-SYNC] 💥 ${e.message}`);
+    console.error(`[PERSONAL SUB-SYNC] 💥 ${e.message}`);
     res.statusCode = 200;
     return res.end(buildOneCueSrt(SYNC_MESSAGES.FAILED));
   }

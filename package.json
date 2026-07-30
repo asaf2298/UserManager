@@ -1,5 +1,5 @@
 {
-  "name": "vecret",
+  "name": "personal",
   "version": "1.0.0",
   "description": "Zero State Vercel Serverless Proxy for Stremio",
   "main": "api/stream.js",

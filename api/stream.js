@@ -113,7 +113,7 @@ function formatForStremio(selected) {
  */
 function logRankingDiagnostics(selected, diagnostics, profile) {
   console.log(
-    `\n[ESAY RANK] 📊 profile=${diagnostics.profile} model=${diagnostics.modelVersion}` +
+    `\n[PERSONAL RANK] 📊 profile=${diagnostics.profile} model=${diagnostics.modelVersion}` +
     ` trust=${diagnostics.trustSnapshotVersion} raw=${diagnostics.rawCount}` +
     ` eligible=${diagnostics.eligibleCount} clusters=${diagnostics.dedup.clusters}` +
     ` merged=${diagnostics.dedup.merged} (${diagnostics.dedup.mode})` +
@@ -150,9 +150,9 @@ function logRankingDiagnostics(selected, diagnostics, profile) {
   });
 
   if (duplicateHashes > 0) {
-    console.log(`[ESAY RANK] 🚨 ${duplicateHashes} duplicate infoHash rows survived dedup — Stremio will hide them.`);
+    console.log(`[PERSONAL RANK] 🚨 ${duplicateHashes} duplicate infoHash rows survived dedup — Stremio will hide them.`);
   }
-  console.log(`[ESAY RANK] 🏁 sent ${selected.length} streams.\n`);
+  console.log(`[PERSONAL RANK] 🏁 sent ${selected.length} streams.\n`);
 }
 
 export default async function handler(req, res) {
@@ -184,7 +184,7 @@ export default async function handler(req, res) {
         `https://pgssubtitle.onrender.com/subtitles/${type}/${idWithExt}`,
       ];
       sleepyAddons.forEach(url => { fetch(url).catch(() => {}); });
-      console.log(`[ESAY WAKEUP] ⏰ נשלחו פינגים להשכמת שרתים עבור סוג ${type} | מזהה: ${idWithExt}`);
+      console.log(`[PERSONAL WAKEUP] ⏰ נשלחו פינגים להשכמת שרתים עבור סוג ${type} | מזהה: ${idWithExt}`);
     }
 
     if (type === 'tv' || type === 'channel') {
@@ -204,7 +204,7 @@ export default async function handler(req, res) {
         }
         if (tvRes.ok) return res.status(200).json(await tvRes.json());
       } catch (e) {
-        console.error(`[ESAY DIAGNOSTIC] 💥 שגיאה בשליפת ערוץ חי: ${e.message}`);
+        console.error(`[PERSONAL DIAGNOSTIC] 💥 שגיאה בשליפת ערוץ חי: ${e.message}`);
       }
       return res.status(200).json({ streams: [] });
     }
@@ -216,7 +216,7 @@ export default async function handler(req, res) {
       const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
       const yastreamBase = findYastreamBaseUrl(addonUrls, process.env.YASTREAM_URL || '');
       if (!yastreamBase) {
-        console.log(`[ESAY STREAM] ⚠️ provider id without Yastream in ADDON_URLS: ${idNoExt.slice(0, 48)}`);
+        console.log(`[PERSONAL STREAM] ⚠️ provider id without Yastream in ADDON_URLS: ${idNoExt.slice(0, 48)}`);
         return res.status(200).json({ streams: [] });
       }
       try {
@@ -234,10 +234,10 @@ export default async function handler(req, res) {
         const ysData = await ysRes.json();
         const raw = Array.isArray(ysData?.streams) ? ysData.streams : [];
         const streams = raw.filter(s => s && !isNoticeStream(s));
-        console.log(`[ESAY STREAM] 🌏 Yastream provider ${idNoExt.slice(0, 40)} → ${streams.length} streams`);
+        console.log(`[PERSONAL STREAM] 🌏 Yastream provider ${idNoExt.slice(0, 40)} → ${streams.length} streams`);
         return res.status(200).json({ streams });
       } catch (e) {
-        console.error(`[ESAY STREAM] 💥 Yastream provider fetch: ${e.message}`);
+        console.error(`[PERSONAL STREAM] 💥 Yastream provider fetch: ${e.message}`);
         return res.status(200).json({ streams: [] });
       }
     }
@@ -260,7 +260,7 @@ export default async function handler(req, res) {
       }
       : baseProfile;
     if (capable) {
-      console.log(`[ESAY STREAM] 🚀 Capable client (${clientUA.substring(0, 40)}) → capable compatibility profile`);
+      console.log(`[PERSONAL STREAM] 🚀 Capable client (${clientUA.substring(0, 40)}) → capable compatibility profile`);
     }
 
     // ID resolve stays opt-in and never delays the base fan-out.
@@ -299,7 +299,7 @@ export default async function handler(req, res) {
     const finalStreams = formatForStremio(result.selected);
     return res.status(200).json({ streams: finalStreams });
   } catch (error) {
-    console.error('[ESAY DIAGNOSTIC] 💥 שגיאת קריסה כללית ב-Proxy:', error.stack || error);
+    console.error('[PERSONAL DIAGNOSTIC] 💥 שגיאת קריסה כללית ב-Proxy:', error.stack || error);
     return res.status(200).json({ streams: [] });
   }
 }

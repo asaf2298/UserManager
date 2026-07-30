@@ -1,6 +1,6 @@
-# UserManager-Stremio (Vecret / Personal Proxy)
+# UserManager-Stremio (Personal Proxy)
 
-Vecret (**Personal**, formerly Esay) is a serverless proxy and aggregator for **Stremio and Kodi** addons, built for **Vercel Serverless Functions**. It fans out to multiple upstream addons in parallel, then runs a deterministic **retrieve → parse → feature → exact dedup → profile score → constrained select** pipeline for streams, plus mathematical subtitle ranking and optional embedded-only auto-sync.
+**Personal** (formerly Vecret, formerly Esay) is a serverless proxy and aggregator for **Stremio and Kodi** addons, built for **Vercel Serverless Functions**. It fans out to multiple upstream addons in parallel, then runs a deterministic **retrieve → parse → feature → exact dedup → profile score → constrained select** pipeline for streams, plus mathematical subtitle ranking and optional embedded-only auto-sync.
 
 Stremio install name: **`Personal - {name}`** (from `USER_CONFIGS`).
 
@@ -180,7 +180,7 @@ GET /api/kodi-catalog?userKey=my_secret_master_key&list=catalogs
 ## Diagnostics
 
 Watch Vercel **Logs** for tags such as:
-`[ESAY STREAM]`, `[ESAY SEARCH]`, `[ID-RESOLVE]`, `[ESAY SUBTITLES]`, `[ESAY SUB-SYNC]`, `[ESAY SUB-PROXY]`, `[META HELPER]`.
+`[PERSONAL STREAM]`, `[PERSONAL SEARCH]`, `[ID-RESOLVE]`, `[PERSONAL SUBTITLES]`, `[PERSONAL SUB-SYNC]`, `[PERSONAL SUB-PROXY]`, `[META HELPER]`.
 
 ---
 

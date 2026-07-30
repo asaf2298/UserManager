@@ -1,4 +1,4 @@
-// Local development server for the Vecret Stremio proxy.
+// Local development server for the Personal Stremio proxy.
 //
 // `vercel dev` is the intended dev command, but it requires an interactive
 // Vercel login + linked project, which is not available in headless/CI
@@ -126,7 +126,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`\nVecret dev server listening on http://localhost:${PORT}`);
+  console.log(`\nPersonal dev server listening on http://localhost:${PORT}`);
   console.log('Stremio manifest: http://localhost:' + PORT + '/<USER_KEY>/manifest.json');
   console.log('Kodi endpoint:    http://localhost:' + PORT + '/api/kodi?imdb_id=tt0111161&type=movie\n');
 });

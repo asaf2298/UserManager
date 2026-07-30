@@ -198,7 +198,7 @@ function buildProxyUrl(req, originalUrl) {
 }
 
 export default async function handler(req, res) {
-    console.log(`[ESAY SUBTITLES] 🟢 NEW REQUEST DETECTED: ${req.url}`); 
+    console.log(`[PERSONAL SUBTITLES] 🟢 NEW REQUEST DETECTED: ${req.url}`); 
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -228,7 +228,7 @@ export default async function handler(req, res) {
         const videoKey = buildVideoKey({ ...videoIdentity, contentId: id });
 
         console.log(
-            `[ESAY SUBTITLES] 🔎 מזהה: ${id} | קובץ: ${originalFilename || 'לא נמצא'}` +
+            `[PERSONAL SUBTITLES] 🔎 מזהה: ${id} | קובץ: ${originalFilename || 'לא נמצא'}` +
             ` | hash=${videoIdentity.videoHash || '-'} size=${videoIdentity.videoSize || '-'}` +
             ` | videoKey=${videoKey || 'none'}`
         );
@@ -247,7 +247,7 @@ export default async function handler(req, res) {
         if (id.startsWith('tt') || id.startsWith('tmdb:')) {
             contentMeta = await getContentMeta(type, id);
             videoRuntimeMin = contentMeta?.runtimeMin || null;
-            console.log(`[ESAY SUBTITLES] 🕒 משך וידאו ידוע: ${videoRuntimeMin ?? 'לא ידוע'} דקות`);
+            console.log(`[PERSONAL SUBTITLES] 🕒 משך וידאו ידוע: ${videoRuntimeMin ?? 'לא ידוע'} דקות`);
         }
 
         // המערך המשותף שמתמלא בזמן אמת ע"י הספקים
@@ -286,7 +286,7 @@ export default async function handler(req, res) {
                 
                 if (data.subtitles && data.subtitles.length > 0) {
                     const subCount = data.subtitles.length;
-                    console.log(`[ESAY SUBTITLES] ⏱️ ספק ${calculatedProvider} ${reqTypeStr} הביא ${subCount} תוצאות ב-${elapsed}ms`);
+                    console.log(`[PERSONAL SUBTITLES] ⏱️ ספק ${calculatedProvider} ${reqTypeStr} הביא ${subCount} תוצאות ב-${elapsed}ms`);
                     
                     const subsToAdd = data.subtitles.map(s => {
                         s._isTextSearch = isSearch;
@@ -311,7 +311,7 @@ export default async function handler(req, res) {
             // Keep subtitle text-search lean: at most 2 titles (HE-first if dubbed, else EN+original)
             const titlesToTry = titles.slice(0, isDubbedQuery(hint) ? 2 : 2);
             for (const title of titlesToTry) {
-                console.log(`[ESAY SUBTITLES] 🔤 מריץ גיבוי טקסט: "${title}"...`);
+                console.log(`[PERSONAL SUBTITLES] 🔤 מריץ גיבוי טקסט: "${title}"...`);
                 const searchPromises = addons.map(url => fetchSubtitleAddon(url, `search=${encodeURIComponent(title)}`, true));
                 fetchPromises.push(...searchPromises);
             }
@@ -323,10 +323,10 @@ export default async function handler(req, res) {
                 const hebCount = gatheredSubs.filter(sub => classifySubtitleLang(sub.lang) === 'heb').length;
 
                 if (hebCount >= 3) {
-                    console.log(`[ESAY TIMEOUT] ⏱️ עברו 6 שניות. יש ${hebCount} כתוביות בעברית -> חותך את ההמתנה!`);
+                    console.log(`[PERSONAL TIMEOUT] ⏱️ עברו 6 שניות. יש ${hebCount} כתוביות בעברית -> חותך את ההמתנה!`);
                     resolve('TIMEOUT_6');
                 } else {
-                    console.log(`[ESAY TIMEOUT] ⏱️ עברו 6 שניות, חסרות כתוביות בעברית (${hebCount}/3) -> מאריך ל-9 שניות...`);
+                    console.log(`[PERSONAL TIMEOUT] ⏱️ עברו 6 שניות, חסרות כתוביות בעברית (${hebCount}/3) -> מאריך ל-9 שניות...`);
                     setTimeout(() => resolve('TIMEOUT_9'), 3000);
                 }
             }, 6000);
@@ -338,7 +338,7 @@ export default async function handler(req, res) {
         ]);
 
         if (typeof raceResult === 'string') {
-            console.warn(`[ESAY TIMEOUT] ⚠️ הסתיים בעקבות טיימר: ${raceResult}`);
+            console.warn(`[PERSONAL TIMEOUT] ⚠️ הסתיים בעקבות טיימר: ${raceResult}`);
         }
 
         // עיבוד הנתונים שנאספו
@@ -366,11 +366,11 @@ export default async function handler(req, res) {
         // Honest empty > fake Hebrew. Never fall back to arbitrary langs labeled as heb.
         if (uniqueSubs.length === 0 && gatheredSubs.length > 0) {
             console.log(
-                `[ESAY SUBTITLES] ⚠️ אין heb/eng/rus מאומתים מבין ${gatheredSubs.length} תוצאות — מחזיר ריק (לא מסמנים שפות אחרות כעברית)`
+                `[PERSONAL SUBTITLES] ⚠️ אין heb/eng/rus מאומתים מבין ${gatheredSubs.length} תוצאות — מחזיר ריק (לא מסמנים שפות אחרות כעברית)`
             );
         }
 
-        console.log(`\n[ESAY DIAGNOSTIC] 📊 דו"ח סינון שפות:`);
+        console.log(`\n[PERSONAL DIAGNOSTIC] 📊 דו"ח סינון שפות:`);
         console.log(`✅ שפות שאושרו ונשמרו:`, keptLangs);
         console.log(`🚫 שפות שנחסמו ונמחקו:`, droppedLangs);
 
@@ -432,7 +432,7 @@ export default async function handler(req, res) {
             if (lang === 'heb' && scriptLang && scriptLang !== 'heb') {
                 mislabelDropped++;
                 console.log(
-                    `[ESAY SUBTITLES] 🚫 כתובית סומנה עברית אך התוכן=${scriptLang} — מושמטת | ${String(sub.title || sub.id || '').slice(0, 60)}`
+                    `[PERSONAL SUBTITLES] 🚫 כתובית סומנה עברית אך התוכן=${scriptLang} — מושמטת | ${String(sub.title || sub.id || '').slice(0, 60)}`
                 );
                 return;
             }
@@ -464,7 +464,7 @@ export default async function handler(req, res) {
             if (durationMatch) durationBonusCount++;
 
             const provider = sub._providerName || 'Personal Sub';
-            const safeId = String(sub.id || `esay${index}`).replace(/[^a-zA-Z0-9]/g, '').substring(0, 10);
+            const safeId = String(sub.id || `personal${index}`).replace(/[^a-zA-Z0-9]/g, '').substring(0, 10);
             const warning = (sub.behaviorHints?.notWebReady) ? ' ⚠️ נגן חיצוני' : '';
             const rawTitle = String(sub.title || 'כתובית').replace(/\n+/g, ' ').trim();
 
@@ -475,7 +475,7 @@ export default async function handler(req, res) {
                 .replace(/\s{2,}/g, ' ').trim();
 
             cleanedSubs.push({
-                id: `esay_${index}_${safeId}`,
+                id: `personal_${index}_${safeId}`,
                 url: buildProxyUrl(req, String(sub.url)),
                 lang,
                 title: finalTitle,
@@ -490,10 +490,10 @@ export default async function handler(req, res) {
         });
 
         if (durationBonusCount > 0) {
-            console.log(`[ESAY SUBTITLES] 🎯 התאמת משך (±5%) נמצאה ב-${durationBonusCount} כתוביות (וידאו=${videoRuntimeMin}m)`);
+            console.log(`[PERSONAL SUBTITLES] 🎯 התאמת משך (±5%) נמצאה ב-${durationBonusCount} כתוביות (וידאו=${videoRuntimeMin}m)`);
         }
         if (mislabelDropped > 0) {
-            console.log(`[ESAY SUBTITLES] 🧹 הוסרו ${mislabelDropped} כתוביות שסומנו עברית אך אינן בעברית`);
+            console.log(`[PERSONAL SUBTITLES] 🧹 הוסרו ${mislabelDropped} כתוביות שסומנו עברית אך אינן בעברית`);
         }
 
         // Language first (Hebrew audience), human before machine translation, then
@@ -516,7 +516,7 @@ export default async function handler(req, res) {
         if (videoKey && base) {
             const knownNoEmbeds = await hasKnownNoEmbeds(videoKey, id);
             if (knownNoEmbeds) {
-                console.log(`[ESAY SUBTITLES] 🔄 דילוג על סנכרון כתוביות: אין כתוביות מוטמעות בקובץ (${videoKey})`);
+                console.log(`[PERSONAL SUBTITLES] 🔄 דילוג על סנכרון כתוביות: אין כתוביות מוטמעות בקובץ (${videoKey})`);
             } else {
                 syncTracks = buildSyncTrackDescriptors({
                     bases: pickHebrewSyncBases(cleanedSubs),
@@ -528,7 +528,7 @@ export default async function handler(req, res) {
                     videoSize: videoIdentity.videoSize,
                 });
                 if (syncTracks.length) {
-                    console.log(`[ESAY SUBTITLES] 🔄 הוצעו ${syncTracks.length} מסלולי סנכרון כתוביות`);
+                    console.log(`[PERSONAL SUBTITLES] 🔄 הוצעו ${syncTracks.length} מסלולי סנכרון כתוביות`);
                 }
             }
         }
@@ -539,11 +539,11 @@ export default async function handler(req, res) {
             return clean;
         });
 
-        console.log(`[ESAY SUBTITLES] 🏁 הליך הסתיים. נשלחו ${responseSubs.length} כתוביות ללקוח.\n`);
+        console.log(`[PERSONAL SUBTITLES] 🏁 הליך הסתיים. נשלחו ${responseSubs.length} כתוביות ללקוח.\n`);
         return res.status(200).json({ subtitles: responseSubs });
 
     } catch (error) {
-        console.error('[ESAY SUBTITLES] 💥 Global Proxy Error:', error);
+        console.error('[PERSONAL SUBTITLES] 💥 Global Proxy Error:', error);
         return res.status(200).json({ subtitles: [] });
     }
 }

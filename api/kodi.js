@@ -49,7 +49,7 @@ export default async function handler(req, res) {
     const results = formatKodiResults(playable);
 
     console.log(
-      `[ESAY KODI] 🎛️ ${imdb_id} → ranked=${result.diagnostics.eligibleCount}` +
+      `[PERSONAL KODI] 🎛️ ${imdb_id} → ranked=${result.diagnostics.eligibleCount}` +
       ` clusters=${result.diagnostics.dedup.clusters} selected=${result.selected.length}` +
       ` playable=${results.length}`
     );

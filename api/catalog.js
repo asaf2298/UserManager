@@ -269,10 +269,10 @@ export default async function handler(req, res) {
         // ==========================================
         // 1. Mixed Search (fast movie/series/complete + full)
         // ==========================================
-        if (cleanCatalogId.startsWith('esay_mixed_search') && extraPart.includes('search=')) {
+        if (cleanCatalogId.startsWith('personal_mixed_search') && extraPart.includes('search=')) {
             const handlerStarted = Date.now();
-            const isComplete = cleanCatalogId === 'esay_mixed_search_complete';
-            const isFull = cleanCatalogId === 'esay_mixed_search_full';
+            const isComplete = cleanCatalogId === 'personal_mixed_search_complete';
+            const isFull = cleanCatalogId === 'personal_mixed_search_full';
             // VIP hosts (Kan-Box / AnimeIL) only on complete + full
             const includeVip = isComplete || isFull;
 
@@ -297,7 +297,7 @@ export default async function handler(req, res) {
             const perFetchMs = softMs;
 
             console.log(
-                `[ESAY SEARCH] 🔍 ${cleanCatalogId} | budget=${hardBudgetMs}ms discovery=${afterDiscoveryMs}ms ` +
+                `[PERSONAL SEARCH] 🔍 ${cleanCatalogId} | budget=${hardBudgetMs}ms discovery=${afterDiscoveryMs}ms ` +
                 `soft=${softMs}ms vip=${includeVip} ` +
                 `| ${allSearchCatalogs.length} catalogs / ${new Set(allSearchCatalogs.map(c => c.baseUrl)).size} addons`
             );
@@ -326,7 +326,7 @@ export default async function handler(req, res) {
             if (isFull) {
                 excludeIds = collectFastSearchIds(queryKey);
                 if (excludeIds.size > 0) {
-                    console.log(`[ESAY SEARCH] 🧹 full excludes ${excludeIds.size} ids already returned by fast searches`);
+                    console.log(`[PERSONAL SEARCH] 🧹 full excludes ${excludeIds.size} ids already returned by fast searches`);
                 }
             }
 
@@ -341,7 +341,7 @@ export default async function handler(req, res) {
             }
 
             console.log(
-                `[ESAY SEARCH] ✅ ${cleanCatalogId} done in ${afterFanoutMs}ms → ${combinedMetas.length} metas`
+                `[PERSONAL SEARCH] ✅ ${cleanCatalogId} done in ${afterFanoutMs}ms → ${combinedMetas.length} metas`
             );
             // #region agent log
             debugLog('H-SEARCH', 'api/catalog.js:mixedSearch', 'search done', {
@@ -390,7 +390,7 @@ export default async function handler(req, res) {
         return res.status(200).json(data);
 
     } catch (error) {
-        console.error(`[ESAY CATALOG PROXY ERROR]: ${error.message}`);
+        console.error(`[PERSONAL CATALOG PROXY ERROR]: ${error.message}`);
         debugLog('H2', 'api/catalog.js:error', 'catalog proxy error', { err: String(error.message || error) });
         return res.status(200).json({ metas: [] });
     }

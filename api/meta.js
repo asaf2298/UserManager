@@ -66,7 +66,7 @@ export default async function handler(req, res) {
             branch = 'tv';
         } else if (isYastreamProviderId(id)) {
             if (!yastreamBase) {
-                console.log(`[ESAY META] ⚠️ Yastream provider id ${id.slice(0, 40)} but no Yastream URL in ADDON_URLS`);
+                console.log(`[PERSONAL META] ⚠️ Yastream provider id ${id.slice(0, 40)} but no Yastream URL in ADDON_URLS`);
                 return res.status(404).json({ meta: null });
             }
             targetUrl = `${yastreamBase}/meta/${forwardType}/${idWithExt}`;
