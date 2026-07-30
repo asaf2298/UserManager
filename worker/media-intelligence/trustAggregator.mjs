@@ -29,11 +29,15 @@ const LOOKBACK_DAYS = 120;
 const MAX_OBSERVATIONS = 5000;
 
 /** Rebuild the prior for a provider id recorded as `family:instanceKey`. */
-function priorFor(providerId, metric) {
-  const family = String(providerId || '').split(':')[0];
-  // Resolving by family name gives us the registry entry without needing the
-  // original URL, which telemetry intentionally does not store.
-  const provider = resolveProvider(`https://${family}.invalid`, { configured: true });
+export function priorFor(providerId, metric) {
+  // instanceKey already carries the real hostname (canonicalizeSourceBase never
+  // hashes it, only config-looking path segments) — reuse it instead of
+  // reconstructing a fake `${family}.invalid` URL, which cannot match any
+  // exactHost/hostSubstring/hostLabel registry entry and silently falls back
+  // to GENERIC_KNOWN for hosts like kan_box / personal_telegram.
+  const colonIdx = String(providerId || '').indexOf(':');
+  const instanceKey = colonIdx >= 0 ? providerId.slice(colonIdx + 1) : '';
+  const provider = resolveProvider(`https://${instanceKey}`, { configured: true });
   const prior = metric === METRIC.CACHE_CLAIM ? cacheClaimPrior(provider) : integrityPrior(provider);
   return prior || { mu0: 0.5, kappa0: 4 };
 }

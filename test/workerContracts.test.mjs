@@ -5,6 +5,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gradeClaim } from '../worker/media-intelligence/auditRunner.mjs';
 import { evaluateHostBusyRow } from '../worker/media-intelligence/hostBusy.mjs';
+import { priorFor } from '../worker/media-intelligence/trustAggregator.mjs';
+import { METRIC } from '../lib/providerTrust.js';
 import { isCollectionThin } from '../lib/streamEngine.js';
 
 test('gradeClaim rewards truthful TorBox cache labels only', () => {
@@ -55,4 +57,26 @@ test('deferred alias fan-out only fires when the collection is still thin', () =
   assert.equal(isCollectionThin(40), false);
   assert.equal(isCollectionThin(2, 10), true);
   assert.equal(isCollectionThin(10, 10), false);
+});
+
+test('priorFor resolves first-party hosts to their tuned prior, not the generic fallback', () => {
+  // providerId is always persisted as `family:instanceKey` (see providerCapabilities.js
+  // resolveProvider). instanceKey carries the real hostname — priorFor must use it
+  // rather than reconstructing a `${family}.invalid` URL, which cannot match any
+  // exactHost registry entry and silently degrades to generic_known.
+  const kanBox = priorFor('kan_box:kan-box-addon.vercel.app', METRIC.INTEGRITY);
+  assert.deepEqual(kanBox, { mu0: 0.85, kappa0: 8 });
+
+  const telegram = priorFor(
+    'personal_telegram:advantage-shot-petition-crucial.trycloudflare.com/as123456',
+    METRIC.INTEGRITY,
+  );
+  assert.deepEqual(telegram, { mu0: 0.82, kappa0: 8 });
+
+  const animeIl = priorFor('animeil:animeil.tv', METRIC.INTEGRITY);
+  assert.deepEqual(animeIl, { mu0: 0.82, kappa0: 8 });
+
+  // An actually-unrecognized host still correctly falls back to generic_known.
+  const stranger = priorFor('some_random_family:totally-unknown-host.example', METRIC.INTEGRITY);
+  assert.deepEqual(stranger, { mu0: 0.60, kappa0: 4 });
 });
