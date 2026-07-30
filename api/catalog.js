@@ -2,6 +2,7 @@ import fetch from 'node-fetch';
 import { debugLog } from '../lib/debugLog.js';
 import { isYastreamProviderId, rewriteMetaToImdbIfKnown } from '../lib/yastream.js';
 import { resolveProvider, evaluateVip } from '../lib/providerCapabilities.js';
+import { MIXED_SEARCH_CATALOG_IDS, MIXED_SEARCH_PREFIX } from '../lib/catalogIds.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -269,10 +270,10 @@ export default async function handler(req, res) {
         // ==========================================
         // 1. Mixed Search (fast movie/series/complete + full)
         // ==========================================
-        if (cleanCatalogId.startsWith('personal_mixed_search') && extraPart.includes('search=')) {
+        if (cleanCatalogId.startsWith(MIXED_SEARCH_PREFIX) && extraPart.includes('search=')) {
             const handlerStarted = Date.now();
-            const isComplete = cleanCatalogId === 'personal_mixed_search_complete';
-            const isFull = cleanCatalogId === 'personal_mixed_search_full';
+            const isComplete = cleanCatalogId === MIXED_SEARCH_CATALOG_IDS.complete;
+            const isFull = cleanCatalogId === MIXED_SEARCH_CATALOG_IDS.full;
             // VIP hosts (Kan-Box / AnimeIL) only on complete + full
             const includeVip = isComplete || isFull;
 

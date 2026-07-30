@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
 import { YASTREAM_MANIFEST_PREFIXES } from '../lib/yastream.js';
+import { MIXED_SEARCH_CATALOG_IDS } from '../lib/catalogIds.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -104,10 +105,10 @@ export default async function handler(req, res) {
         }
 
         const unifiedSearchCatalogs = [
-            { id: "personal_mixed_search_movie", type: "movie", name: " חיפוש משולב", extra: [{ name: "search", isRequired: true }] },
-            { id: "personal_mixed_search_series", type: "series", name: " חיפוש משולב", extra: [{ name: "search", isRequired: true }] },
-            { id: "personal_mixed_search_complete", type: "anime", name: " חיפוש משולב - complete", extra: [{ name: "search", isRequired: true }] },
-            { id: "personal_mixed_search_full", type: "anime", name: " חיפוש משולב - full", extra: [{ name: "search", isRequired: true }] }
+            { id: MIXED_SEARCH_CATALOG_IDS.movie, type: "movie", name: " חיפוש משולב", extra: [{ name: "search", isRequired: true }] },
+            { id: MIXED_SEARCH_CATALOG_IDS.series, type: "series", name: " חיפוש משולב", extra: [{ name: "search", isRequired: true }] },
+            { id: MIXED_SEARCH_CATALOG_IDS.complete, type: "anime", name: " חיפוש משולב - complete", extra: [{ name: "search", isRequired: true }] },
+            { id: MIXED_SEARCH_CATALOG_IDS.full, type: "anime", name: " חיפוש משולב - full", extra: [{ name: "search", isRequired: true }] }
         ];
 
         return res.status(200).json({
