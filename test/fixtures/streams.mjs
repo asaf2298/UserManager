@@ -79,6 +79,18 @@ export const uncachedDeadP2P = withSource({
   infoHash: '4444aaaa5555bbbb6666cccc7777dddd8888eeee',
 }, KNABEN);
 
+/**
+ * Torrent-to-http gateway from an unregistered addon (e.g. "Meteor"): wraps a
+ * real, single-seeder torrent in an http URL. Must still classify as P2P --
+ * an http locator alone is not proof of readiness for a non-debrid provider.
+ */
+export const httpWrappedThinP2P = withSource({
+  name: 'Meteor 4K',
+  title: 'Creation.of.the.Gods.I.Kingdom.of.Storms.2160p.BluRay.h265\n👤 1 💾 29.18 GB',
+  url: 'https://meteor.example.net/stream/aaaa1111bbbb2222cccc3333dddd4444eeee5555',
+  infoHash: 'aaaa1111bbbb2222cccc3333dddd4444eeee5555',
+}, UNKNOWN_HOST);
+
 /** Bare [TB] means "will download to debrid", i.e. queued, not cached. */
 export const queuedDebrid = withSource({
   name: '[TB] Yastream',
