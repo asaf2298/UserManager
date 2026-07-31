@@ -37,7 +37,9 @@ Non-playable “notice” rows from upstreams are dropped (Yuki `[YS INFO]` / `[
 * Embedded text references only (no audio / Whisper / `ffsubsync` / `offsetMs`). Worker yields on Telegram `personal_host_busy`; TorBox playback does not block sync.
 
 ### Israeli catalogs (Kan-Box)
-Kan-Box catalogs (including `Live_TV_Channels`) are currently hidden from the Personal manifest and from unified search — install Kan-Box's own addon directly for LiveTV. `TV_ADDON_URL` is still used to proxy `meta`/`stream` for `il_*` ids that are already linked from elsewhere.
+Kan-Box VOD / podcast / Dragon Ball catalogs (prefixed `IL - ` when needed) are advertised in the Personal manifest and included in unified search. The LiveTV catalog (`Live_TV_Channels`) is intentionally excluded from both — Kan-Box's own addon already advertises it directly. `TV_ADDON_URL` still proxies `meta`/`stream` for `il_*` ids that are already linked from elsewhere.
+
+**Board vs Discover:** Stremio Board only loads catalogs with no *required* extras. Dragon Ball (`dbz_movies_catalog`, `dbz_series_catalog`) keep a required `genre` extra so they appear in **Discover** but not on the **Board**. Everything else remains on both.
 
 ### Unified search
 Wall-clock budgets (discovery + fan-out) stay under Vercel Hobby’s ~10s limit; fetch + JSON share one timeout so stalled bodies cannot hang the request.

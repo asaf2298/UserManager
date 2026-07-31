@@ -1,7 +1,7 @@
 import fetch from 'node-fetch';
 import { isYastreamProviderId, rewriteMetaToImdbIfKnown } from '../lib/yastream.js';
 import { resolveProvider, evaluateVip } from '../lib/providerCapabilities.js';
-import { MIXED_SEARCH_CATALOG_IDS, MIXED_SEARCH_PREFIX } from '../lib/catalogIds.js';
+import { MIXED_SEARCH_CATALOG_IDS, MIXED_SEARCH_PREFIX, LIVE_TV_CATALOG_ID } from '../lib/catalogIds.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -188,24 +188,31 @@ async function getSearchCatalogs(baseUrl, type, headers, excludeTypes = null, al
             );
         }
 
+        // Kan-Box's LiveTV catalog is never a unified-search source, even if
+        // it happens to expose a search extra: it has its own addon for that.
+        catalogs = catalogs?.filter(c => String(c.id || '') !== LIVE_TV_CATALOG_ID);
+
         return catalogs ? catalogs.map(c => ({ id: c.id, type: c.type, baseUrl })) : [];
     } catch {
         return [];
     }
 }
 
-async function getAllSearchCatalogs(addonUrls, reqType, proxyHeaders, {
+async function getAllSearchCatalogs(tvAddonUrl, addonUrls, reqType, proxyHeaders, {
     excludeTypes = null,
     includeVip = true,
     allTypes = false
 } = {}) {
-    const sources = addonUrls
-        .map(u => u.replace(/\/manifest\.json$/i, '').replace(/\/$/, ''))
-        .filter(u => {
-            if (!u) return false;
-            if (!includeVip && isVipSearchHost(u)) return false;
-            return true;
-        });
+    const sources = [
+        ...(includeVip && tvAddonUrl ? [tvAddonUrl] : []),
+        ...addonUrls
+            .map(u => u.replace(/\/manifest\.json$/i, '').replace(/\/$/, ''))
+            .filter(u => {
+                if (!u || u === tvAddonUrl) return false;
+                if (!includeVip && isVipSearchHost(u)) return false;
+                return true;
+            })
+    ];
 
     const perSource = await Promise.all(
         sources.map(url => getSearchCatalogs(url, reqType, proxyHeaders, excludeTypes, allTypes))
@@ -280,7 +287,7 @@ export default async function handler(req, res) {
 
             const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
             const allSearchCatalogs = await getAllSearchCatalogs(
-                addonUrls, reqType, proxyHeaders,
+                tvAddonUrl, addonUrls, reqType, proxyHeaders,
                 {
                     excludeTypes: isComplete ? ['movie', 'series'] : null,
                     includeVip,
