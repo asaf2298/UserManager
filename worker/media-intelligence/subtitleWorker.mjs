@@ -25,6 +25,7 @@ import { countSubtitleCues, decodeSubtitleBuffer } from '../../lib/subtitleUtils
 import { BITMAP_SUBTITLE_CODECS } from '../../lib/releaseParser.js';
 import { getContentMeta } from '../../lib/search.js';
 import { MODEL_VERSION } from '../../lib/versions.js';
+import { auditInclusionProbability, currentSnapshot } from '../../lib/providerTrust.js';
 import {
   looksCloudflareProxiedPlayback,
   parseFilenameFromPlaybackUrl,
@@ -35,6 +36,7 @@ import { resolveProbeDownloadUrl } from './torbox.mjs';
 
 const JOBS_TABLE = 'personal_subtitle_sync_jobs';
 const CACHE_TABLE = 'personal_subtitle_sync';
+const OBSERVATIONS_TABLE = 'personal_provider_observations';
 
 /** Raised when the Telegram lease activates mid-job. Not a real failure. */
 export class BusyAbortError extends Error {
@@ -123,6 +125,65 @@ export async function probeSubtitleTracks(sourceUrl, { onSpawn } = {}) {
       cueCount: null,
     };
   });
+}
+
+/**
+ * Grade an ffprobe attempt as `integrity` evidence: does this provider's claimed
+ * file really open as real, playable video?
+ *
+ * Only counted when the source was the TorBox-resolved CDN locator
+ * (`sourceKind === 'torbox_cdn'`) — a raw offered URL can fail for reasons
+ * (Cloudflare block, geo-restriction) that look identical to a genuinely
+ * fake/corrupt file, so those yield no evidence rather than a false accusation.
+ * Whatever happens *after* a successful probe (no text tracks, extraction or
+ * alass failure) is irrelevant here: ffprobe already proved the container is
+ * real, matching content.
+ */
+export function gradeIntegrityProbe({ probeSucceeded, sourceKind }) {
+  if (probeSucceeded) return { outcome: true, metric: 'integrity' };
+  if (sourceKind === 'torbox_cdn') return { outcome: false, metric: 'integrity' };
+  return { outcome: null, metric: 'integrity' };
+}
+
+/** Current effective weight for a provider/stratum's integrity cell, if a snapshot is loaded. */
+function currentIntegrityWeight(providerId, stratum) {
+  const snapshot = currentSnapshot();
+  const entry = snapshot?.byKey?.get(`${providerId}||${stratum}||integrity`);
+  return entry?.effectiveWeight || 0;
+}
+
+/**
+ * Record one integrity observation from a subtitle-sync probe.
+ *
+ * Best-effort and non-blocking: a write failure here must never fail the sync
+ * job itself. Sampling is demand-driven (whatever the viewer happens to be
+ * watching), unlike the uniform sampling `personal_ranking_audit_queue` uses for
+ * cache-claim audits -- IPW weighting corrects the magnitude of that but not the
+ * underlying selection bias, which is an accepted approximation here.
+ */
+async function recordIntegrityObservation(job, { probeSucceeded, sourceKind }) {
+  if (!job.provider_id) return; // pre-migration job row or unattributed sighting
+  const { outcome, metric } = gradeIntegrityProbe({ probeSucceeded, sourceKind });
+  if (outcome === null) return;
+
+  const stratum = job.stratum || 'unknown|movie';
+  const probability = auditInclusionProbability(currentIntegrityWeight(job.provider_id, stratum));
+  await insertRows(OBSERVATIONS_TABLE, [{
+    provider_id: job.provider_id,
+    provider_family: job.provider_family || String(job.provider_id).split(':')[0],
+    stratum,
+    metric,
+    outcome,
+    inclusion_probability: probability,
+    source: 'controlled_probe',
+    candidate_key: `${job.info_hash || job.id}|${job.file_idx ?? ''}`,
+    model_version: MODEL_VERSION,
+    observed_at: new Date().toISOString(),
+  }], {
+    onConflict: 'provider_id,metric,candidate_key,source',
+    ignoreDuplicates: true,
+    timeoutMs: 3000,
+  }).catch(err => log('integrity', `observation write failed: ${err.message}`));
 }
 
 /** Extract one embedded subtitle stream to SRT text. */
@@ -221,7 +282,7 @@ async function alignWithAlass(referenceFile, baseFile, workDir, { onSpawn }) {
 export async function claimSubtitleJob() {
   const nowIso = new Date().toISOString();
   const params = new URLSearchParams({
-    select: 'id,video_key,content_type,content_id,sub_fingerprint,base_sub_url,reference_slot,playable_url,info_hash,file_idx,attempts',
+    select: 'id,video_key,content_type,content_id,sub_fingerprint,base_sub_url,reference_slot,playable_url,info_hash,file_idx,attempts,provider_id,provider_family,stratum',
     status: 'eq.queued',
     expires_at: `gt.${nowIso}`,
     order: 'created_at.asc',
@@ -364,11 +425,13 @@ export async function processSubtitleJob(job, control) {
     } catch (err) {
       if (err instanceof BusyAbortError) throw err;
       log('subtitle', `ffprobe failed for job ${job.id}: ${err.message}`, { source: source.source });
+      await recordIntegrityObservation(job, { probeSucceeded: false, sourceKind: source.source });
       await finishJob(job.id, {
         status: JOB_STATUS.FAILED, fail_reason: FAIL_REASON.PROBE_FAILED, attempts: (job.attempts || 0) + 1,
       });
       return { ok: false, reason: FAIL_REASON.PROBE_FAILED, error: err.message };
     }
+    await recordIntegrityObservation(job, { probeSucceeded: true, sourceKind: source.source });
 
     const textTracks = tracks.filter(t => t.isText);
     if (!textTracks.length) {
