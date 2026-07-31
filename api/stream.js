@@ -2,6 +2,7 @@ import fetch from 'node-fetch';
 import { retrieveRankAndSelect } from '../lib/streamEngine.js';
 import { REGEX_BRACKETS, REGEX_PARENS, REGEX_DOWNLOAD, isNoticeStream } from '../lib/utils.js';
 import { findYastreamBaseUrl, isYastreamProviderId } from '../lib/yastream.js';
+import { isDailymotionId, getDailymotionStream } from '../lib/dailymotion.js';
 import { resolveProfile, DEFAULT_PROFILE, scoreBreakdown } from '../lib/streamRanker.js';
 import { RESOLUTION } from '../lib/releaseParser.js';
 import { TRANSPORT, CACHE_CLAIM } from '../lib/providerCapabilities.js';
@@ -176,6 +177,14 @@ export default async function handler(req, res) {
     let rawIdWithExt = urlParts[streamIdx + 2];
     if (rawIdWithExt.includes('%')) rawIdWithExt = decodeURIComponent(rawIdWithExt);
     const idWithExt = rawIdWithExt;
+    const idNoExt = idWithExt.replace(/\.json$/i, '');
+
+    // Own id prefix, own catalog: must be checked before the tv/channel
+    // branch below, which would otherwise forward it to Kan-Box's
+    // TV_ADDON_URL since Dailymotion also uses type "channel".
+    if (isDailymotionId(idNoExt)) {
+      return res.status(200).json(await getDailymotionStream(idNoExt));
+    }
 
     // Wake free-tier subtitle hosts that sleep, so the later subtitle request is warm.
     if (type === 'movie' || type === 'series' || type === 'anime') {
@@ -211,7 +220,6 @@ export default async function handler(req, res) {
 
     // Yastream Asian provider ids proxy straight through; normal tt titles still
     // fan out to every configured addon below.
-    const idNoExt = idWithExt.replace(/\.json$/i, '');
     if (isYastreamProviderId(idNoExt)) {
       const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
       const yastreamBase = findYastreamBaseUrl(addonUrls, process.env.YASTREAM_URL || '');

@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
 import { findYastreamBaseUrl, isYastreamProviderId } from '../lib/yastream.js';
+import { isDailymotionId, getDailymotionMeta } from '../lib/dailymotion.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -39,6 +40,13 @@ export default async function handler(req, res) {
         if (rawIdWithExt.includes('%')) rawIdWithExt = decodeURIComponent(rawIdWithExt);
         const idWithExt = rawIdWithExt;
         const id = idWithExt.replace('.json', '');
+
+        // Own id prefix, own catalog: must be checked before the tv/channel
+        // branch below, which would otherwise forward it to Kan-Box's
+        // TV_ADDON_URL since Dailymotion also uses type "channel".
+        if (isDailymotionId(id)) {
+            return res.status(200).json(await getDailymotionMeta(id));
+        }
 
         const tvAddonUrl = process.env.TV_ADDON_URL;
         const cleanTvUrl = tvAddonUrl ? tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '') : '';
