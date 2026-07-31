@@ -1,6 +1,7 @@
 import fetch from 'node-fetch';
 import { YASTREAM_MANIFEST_PREFIXES } from '../lib/yastream.js';
 import { MIXED_SEARCH_CATALOG_IDS, LIVE_TV_CATALOG_ID } from '../lib/catalogIds.js';
+import { DAILYMOTION_MANIFEST_PREFIX, DAILYMOTION_CATALOG_MANIFEST_ENTRY } from '../lib/dailymotion.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -111,7 +112,8 @@ export default async function handler(req, res) {
                 "il_",
                 "tt", "tmdb", "mal", "kitsu", "anilist", "anidb", "tvdb",
                 "http", "https", "dbz:",
-                ...YASTREAM_MANIFEST_PREFIXES
+                ...YASTREAM_MANIFEST_PREFIXES,
+                DAILYMOTION_MANIFEST_PREFIX
             ],
             resources: [
                 "stream",
@@ -128,7 +130,7 @@ export default async function handler(req, res) {
                 }
             ],
             types: ["movie", "series", "anime", "tv", "channel"],
-            catalogs: [...unifiedSearchCatalogs, ...kanboxVodCatalogs]
+            catalogs: [...unifiedSearchCatalogs, ...kanboxVodCatalogs, DAILYMOTION_CATALOG_MANIFEST_ENTRY]
         });
     } catch (error) {
         console.error('Manifest Proxy Error:', error);

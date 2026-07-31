@@ -2,6 +2,7 @@ import fetch from 'node-fetch';
 import { isYastreamProviderId, rewriteMetaToImdbIfKnown } from '../lib/yastream.js';
 import { resolveProvider, evaluateVip } from '../lib/providerCapabilities.js';
 import { MIXED_SEARCH_CATALOG_IDS, MIXED_SEARCH_PREFIX, LIVE_TV_CATALOG_ID } from '../lib/catalogIds.js';
+import { DAILYMOTION_CATALOG_ID, getDailymotionCatalog } from '../lib/dailymotion.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -340,6 +341,16 @@ export default async function handler(req, res) {
                 `[PERSONAL SEARCH] ✅ ${cleanCatalogId} done in ${afterFanoutMs}ms → ${combinedMetas.length} metas`
             );
             return res.status(200).json({ metas: combinedMetas });
+        }
+
+        // ==========================================
+        // 1.5 Dailymotion (own catalog, own id -- must be checked before the
+        // generic tv/channel branch below, which would otherwise proxy it to
+        // Kan-Box's TV_ADDON_URL since Dailymotion also uses type "channel")
+        // ==========================================
+        if (cleanCatalogId === DAILYMOTION_CATALOG_ID) {
+            const data = await getDailymotionCatalog(extraPart);
+            return res.status(200).json(data);
         }
 
         // ==========================================
