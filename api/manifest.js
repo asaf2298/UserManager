@@ -1,6 +1,6 @@
 import fetch from 'node-fetch';
 import { YASTREAM_MANIFEST_PREFIXES } from '../lib/yastream.js';
-import { MIXED_SEARCH_CATALOG_IDS } from '../lib/catalogIds.js';
+import { MIXED_SEARCH_CATALOG_IDS, LIVE_TV_CATALOG_ID } from '../lib/catalogIds.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -13,7 +13,7 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 }
 
 /**
- * Kan-Box catalogs kept in Discovery but hidden from Board by marking a
+ * Kan-Box VOD catalogs kept in Discovery but hidden from Board by marking a
  * required extra (Stremio Board only loads catalogs with no required extras).
  */
 const BOARD_HIDDEN_KANBOX_IDS = new Set([
@@ -22,16 +22,12 @@ const BOARD_HIDDEN_KANBOX_IDS = new Set([
 ]);
 
 /**
- * Prepare a Kan-Box catalog for Personal Board/Discovery.
- * Live TV keeps a short Hebrew name; others get an IL - prefix.
- * Search extras are stripped so Stremio uses חיפוש משולב.
+ * Prepare a Kan-Box VOD catalog for Personal Board/Discovery.
+ * Search extras are stripped so Stremio search goes through unified search instead.
  */
-function prepareKanboxCatalog(cat, { isLive = false } = {}) {
+function prepareKanboxCatalog(cat) {
     let name = cat.name || cat.id;
-    if (isLive) {
-        // User-facing label for Live_TV_Channels
-        name = 'ערוצים חיים';
-    } else if (!name.includes('Israeli') && !name.startsWith('IL - ')) {
+    if (!name.includes('Israeli') && !name.startsWith('IL - ')) {
         name = `IL - ${name}`;
     }
 
@@ -76,8 +72,10 @@ export default async function handler(req, res) {
         const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
         const userConfig = configs[userKey] || { name: 'Unknown' };
 
-        let firstKanboxCatalog = null;
-        let restKanboxCatalogs = [];
+        // LiveTV (Live_TV_Channels) is intentionally excluded: Kan-Box's own
+        // addon already advertises it directly. Only Kan-Box VOD catalogs are
+        // merged in here.
+        let kanboxVodCatalogs = [];
 
         const tvAddonUrl = process.env.TV_ADDON_URL;
         if (tvAddonUrl) {
@@ -88,16 +86,9 @@ export default async function handler(req, res) {
                     const tvManifest = await tvRes.json();
                     const catalogs = tvManifest?.catalogs || [];
 
-                    if (catalogs.length > 0) {
-                        // Prefer Live_TV_Channels as the promoted first row; fall back to catalogs[0]
-                        const liveIdx = catalogs.findIndex(c => String(c.id || '') === 'Live_TV_Channels');
-                        const liveCat = liveIdx >= 0 ? catalogs[liveIdx] : catalogs[0];
-                        firstKanboxCatalog = prepareKanboxCatalog(liveCat, { isLive: true });
-
-                        restKanboxCatalogs = catalogs
-                            .filter(cat => cat !== liveCat)
-                            .map(cat => prepareKanboxCatalog(cat));
-                    }
+                    kanboxVodCatalogs = catalogs
+                        .filter(cat => String(cat.id || '') !== LIVE_TV_CATALOG_ID)
+                        .map(cat => prepareKanboxCatalog(cat));
                 }
             } catch (e) {
                 console.error('TV Addon fetch error:', e.message);
@@ -115,7 +106,7 @@ export default async function handler(req, res) {
             id: `com.personal.${userKey}`,
             version: "2.11.0",
             name: `Personal - ${userConfig.name || userKey}`,
-            description: "Personal Aggregator with Unified Search & LiveTV Israel",
+            description: "Personal Aggregator with Unified Search & IL VOD",
             idPrefixes: [
                 "tt", "tmdb", "il_", "mal", "kitsu", "anilist", "anidb", "tvdb",
                 "http", "https", "dbz:",
@@ -136,11 +127,7 @@ export default async function handler(req, res) {
                 }
             ],
             types: ["movie", "series", "anime", "tv", "channel"],
-            catalogs: [
-                ...(firstKanboxCatalog ? [firstKanboxCatalog] : []),
-                ...unifiedSearchCatalogs,
-                ...restKanboxCatalogs
-            ]
+            catalogs: [...unifiedSearchCatalogs, ...kanboxVodCatalogs]
         });
     } catch (error) {
         console.error('Manifest Proxy Error:', error);

@@ -1,7 +1,7 @@
 import fetch from 'node-fetch';
 import { isYastreamProviderId, rewriteMetaToImdbIfKnown } from '../lib/yastream.js';
 import { resolveProvider, evaluateVip } from '../lib/providerCapabilities.js';
-import { MIXED_SEARCH_CATALOG_IDS, MIXED_SEARCH_PREFIX } from '../lib/catalogIds.js';
+import { MIXED_SEARCH_CATALOG_IDS, MIXED_SEARCH_PREFIX, LIVE_TV_CATALOG_ID } from '../lib/catalogIds.js';
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -187,6 +187,10 @@ async function getSearchCatalogs(baseUrl, type, headers, excludeTypes = null, al
                 c.type === type && c.extra?.some(e => e.name === 'search')
             );
         }
+
+        // Kan-Box's LiveTV catalog is never a unified-search source, even if
+        // it happens to expose a search extra: it has its own addon for that.
+        catalogs = catalogs?.filter(c => String(c.id || '') !== LIVE_TV_CATALOG_ID);
 
         return catalogs ? catalogs.map(c => ({ id: c.id, type: c.type, baseUrl })) : [];
     } catch {
