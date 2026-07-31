@@ -166,8 +166,17 @@ Thin JSON APIs (same stream engine):
 ```http
 GET /api/kodi?imdb_id=tt0111161&type=movie
 GET /api/kodi?imdb_id=tt0944947&type=series&season=1&episode=1
+GET /api/kodi?imdb_id=tt0111161&type=movie&userKey=my_secret_master_key
 GET /api/kodi-catalog?userKey=my_secret_master_key&list=catalogs
 ```
+
+`userKey` on `/api/kodi` (optional) looks up a profile from `USER_CONFIGS`
+exactly like the Stremio path does from the URL, fully swapping to that
+profile's target/diversity/eligibility (not just its weights) — e.g. one
+Kodi install can be `everything`, another `friends_light`. Without a
+recognized `userKey`, requests keep the fixed `kodi` profile (target 100,
+low diversity penalty, long flat list) — see the User Profiles table above.
+`userKey` on `/api/kodi-catalog` is currently unused by the handler itself.
 
 ---
 

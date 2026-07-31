@@ -1,9 +1,16 @@
 // api/kodi.js
 //
 // Thin-client stream API for the Kodi plugin. Uses the same retrieval, feature,
-// dedup, and ranking pipeline as the Stremio path with the Kodi presentation
-// profile: capable device compatibility, a long flat list, and light diversity
-// penalties. The response shape is unchanged for existing plugin versions.
+// dedup, and ranking pipeline as the Stremio path. `userKey` (optional) selects
+// a named USER_CONFIGS profile exactly like the Stremio path does via the URL
+// path segment -- e.g. a "friends_light" Kodi user gets that profile's target
+// count, diversity penalties, and eligibility floor, not the flat/wide "kodi"
+// default. `clientClass: 'capable'` is always applied on top (matching
+// isCapableClient's own "kodi" check in api/stream.js -- this endpoint IS
+// Kodi, no user-agent sniffing needed), with a widened timeout/collection
+// window. Callers without a recognized userKey keep the previous behavior:
+// the fixed "kodi" profile. The response shape is unchanged for existing
+// plugin versions.
 import { retrieveRankAndSelect } from '../lib/streamEngine.js';
 import { resolveProfile } from '../lib/streamRanker.js';
 import { RESOLUTION } from '../lib/releaseParser.js';
@@ -21,23 +28,44 @@ const QUALITY_LABELS = {
   [RESOLUTION.UNKNOWN]: 'SD',
 };
 
+/**
+ * Resolve a Kodi request's profile from its (optional) userKey, exactly like
+ * the Stremio path resolves a profile from the URL path segment. Falls back
+ * to the fixed "kodi" profile when userKey is missing or unrecognized.
+ * `clientClass: 'capable'` and the widened timeout/collection window are
+ * always applied on top, since this endpoint IS Kodi -- no user-agent
+ * sniffing needed the way api/stream.js's isCapableClient() has to do it.
+ */
+export function resolveKodiProfile(userKey) {
+  const configs = JSON.parse(process.env.USER_CONFIGS || '{}');
+  const profileName = configs[userKey]?.profile || 'kodi';
+  const baseProfile = resolveProfile(profileName);
+  const profile = {
+    ...baseProfile,
+    clientClass: 'capable',
+    timeoutMs: Math.max(baseProfile.timeoutMs, 9500),
+    collectionCutoffMs: Math.max(baseProfile.collectionCutoffMs, 7000),
+  };
+  return { profileName, profile };
+}
+
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
-    const { imdb_id, season, episode, type } = req.query;
+    const { imdb_id, season, episode, type, userKey } = req.query;
     if (!imdb_id || !type) return res.status(400).json({ error: 'imdb_id and type are required' });
 
     const idWithExt = (type === 'series' && season && episode)
       ? `${imdb_id}:${season}:${episode}.json`
       : `${imdb_id}.json`;
 
-    const profile = resolveProfile('kodi');
+    const { profileName, profile } = resolveKodiProfile(userKey);
     const result = await retrieveRankAndSelect(type, idWithExt, {
       profile,
-      profileName: 'kodi',
+      profileName,
       addons: (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean),
       clientUA: 'Kodi-ThinClient/1.0',
       clientIp: req.headers['x-forwarded-for']?.split(',')[0] || '',
@@ -49,7 +77,7 @@ export default async function handler(req, res) {
     const results = formatKodiResults(playable);
 
     console.log(
-      `[PERSONAL KODI] 🎛️ ${imdb_id} → ranked=${result.diagnostics.eligibleCount}` +
+      `[PERSONAL KODI] 🎛️ ${imdb_id} profile=${profileName} → ranked=${result.diagnostics.eligibleCount}` +
       ` clusters=${result.diagnostics.dedup.clusters} selected=${result.selected.length}` +
       ` playable=${results.length}`
     );
