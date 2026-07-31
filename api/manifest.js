@@ -108,7 +108,7 @@ export default async function handler(req, res) {
             name: `Personal - ${userConfig.name || userKey}`,
             description: "Personal Aggregator with Unified Search & IL VOD",
             idPrefixes: [
-                "tt", "tmdb", "il_", "mal", "kitsu", "anilist", "anidb", "tvdb",
+                "tt", "tmdb", "mal", "kitsu", "anilist", "anidb", "tvdb",
                 "http", "https", "dbz:",
                 ...YASTREAM_MANIFEST_PREFIXES
             ],
