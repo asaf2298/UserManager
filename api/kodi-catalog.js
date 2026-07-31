@@ -1,6 +1,7 @@
 // api/kodi-catalog.js
 // Adapter רזה לקודי: Cinemeta לקטלוגי VOD, Kan-Box לערוצי Live TV
 import fetch from 'node-fetch';
+import { LIVE_TV_CATALOG_ID } from '../lib/catalogIds.js';
 
 const CINEMETA_BASE = 'https://v3-cinemeta.strem.io';
 
@@ -14,26 +15,20 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
-function isLiveChannel(baseId, type) {
-  return type === "tv" ||
-    baseId.includes("live") ||
-    baseId.includes("makotv") ||
-    baseId.includes("14tv") ||
-    baseId.includes("kanlive") ||
-    baseId.includes("ynettv") ||
-    baseId === "il_24_01" ||
-    baseId === "il_makotv_01" ||
-    baseId === "il_14tv_01" ||
-    baseId === "il_kantv_04" ||
-    baseId === "il_kantv_05" ||
-    baseId === "il_kantv_07" ||
-    baseId === "il_ynettv_01" ||
-    baseId === "il_24newseng_01" ||
-    baseId === "il_24newsheb_01" ||
-    baseId === "il_24newsfrn_01" ||
-    baseId === "il_24newsarb_01" ||
-    baseId === "il_walla_live_01";
+/**
+ * Same identity check api/manifest.js and api/catalog.js already use to find
+ * Kan-Box's live catalog. The previous version of this file re-derived its
+ * own hardcoded per-channel id list and a `baseId.includes("live")` check
+ * that could never match the real catalog id ("Live_TV_Channels" -- capital
+ * L, so the lowercase substring check silently failed), and needed manual
+ * updates every time Kan-Box added a channel. One shared source of truth
+ * instead.
+ */
+function isLiveChannel(catalogId) {
+  return String(catalogId || '') === LIVE_TV_CATALOG_ID;
 }
+
+export { isLiveChannel, mapMetaToKodiItem };
 
 async function getAvailableCatalogs(baseUrl) {
   const cleanBase = baseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
@@ -56,13 +51,14 @@ async function getCatalogItems(baseUrl, type, catalogId, { skip, search }) {
   return Array.isArray(data.metas) ? data.metas : [];
 }
 
-// שולף את כל הערוצים החיים מ-Kan-Box, מסונן לפי רשימת ה-ID המדויקת
+// שולף את כל הערוצים החיים מ-Kan-Box, לפי מזהה הקטלוג היחיד (LIVE_TV_CATALOG_ID)
 async function getLiveChannels(tvAddonUrl) {
   const cleanBase = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
-  const manifest = await fetch(`${cleanBase}/manifest.json`, { headers: { 'Accept': 'application/json' } }).then(r => r.ok ? r.json() : null).catch(() => null);
+  const manifestRes = await fetchWithTimeout(`${cleanBase}/manifest.json`, { headers: { 'Accept': 'application/json' } }, 7000).catch(() => null);
+  const manifest = manifestRes && manifestRes.ok ? await manifestRes.json().catch(() => null) : null;
   if (!manifest || !Array.isArray(manifest.catalogs)) return [];
 
-  const liveCatalogs = manifest.catalogs.filter(c => isLiveChannel(c.id, c.type));
+  const liveCatalogs = manifest.catalogs.filter(c => isLiveChannel(c.id));
   const allItems = [];
   for (const cat of liveCatalogs) {
     const res = await fetchWithTimeout(`${cleanBase}/catalog/${cat.type}/${cat.id}.json`, { headers: { 'Accept': 'application/json' } }, 7000);
