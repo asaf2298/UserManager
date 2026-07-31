@@ -118,16 +118,16 @@ test('slotReferencePool asks viewer to try another sync when language missing', 
 });
 
 test('viewer-facing sync messages are exact and stable', () => {
-  assert.equal(SYNC_MESSAGES.PENDING, 'please wait one minute and reselect to sync');
-  assert.equal(SYNC_MESSAGES.NO_EMBEDS, 'no available embedded subtitles');
-  assert.equal(SYNC_MESSAGES.TRY_OTHER, 'try another sync subtitle');
-  assert.equal(SYNC_MESSAGES.FAILED, 'sorry couldnt sync');
+  assert.equal(SYNC_MESSAGES.PENDING, 'אנא המתן דקה ובחר שוב כדי לסנכרן');
+  assert.equal(SYNC_MESSAGES.NO_EMBEDS, 'אין כתוביות מוטבעות זמינות');
+  assert.equal(SYNC_MESSAGES.TRY_OTHER, 'נסה כתובית סנכרון אחרת');
+  assert.equal(SYNC_MESSAGES.FAILED, 'מצטערים, הסנכרון נכשל');
   const pending = buildOneCueSrt(SYNC_MESSAGES.PENDING);
-  assert.match(pending, /please wait one minute and reselect to sync/);
+  assert.match(pending, /אנא המתן דקה ובחר שוב כדי לסנכרן/);
   assert.match(pending, /-->/);
   // Mid-film visibility: status cues must repeat past the opening minutes.
   assert.match(pending, /01:00:00,000 -->/);
-  assert.ok((pending.match(/please wait one minute and reselect to sync/g) || []).length > 10);
+  assert.ok((pending.match(/אנא המתן דקה ובחר שוב כדי לסנכרן/g) || []).length > 10);
 });
 
 test('proxy-wrapped and bare subtitle URLs share a fingerprint', () => {

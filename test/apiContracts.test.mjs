@@ -159,10 +159,10 @@ test('api/sub-proxy is encoding-only: no offsetMs and rejects bad urls', async (
 });
 
 test('subtitle sync messages stay exactly as locked', () => {
-  assert.equal(SYNC_MESSAGES.PENDING, 'please wait one minute and reselect to sync');
-  assert.equal(SYNC_MESSAGES.NO_EMBEDS, 'no available embedded subtitles');
-  assert.equal(SYNC_MESSAGES.TRY_OTHER, 'try another sync subtitle');
-  assert.equal(SYNC_MESSAGES.FAILED, 'sorry couldnt sync');
+  assert.equal(SYNC_MESSAGES.PENDING, 'אנא המתן דקה ובחר שוב כדי לסנכרן');
+  assert.equal(SYNC_MESSAGES.NO_EMBEDS, 'אין כתוביות מוטבעות זמינות');
+  assert.equal(SYNC_MESSAGES.TRY_OTHER, 'נסה כתובית סנכרון אחרת');
+  assert.equal(SYNC_MESSAGES.FAILED, 'מצטערים, הסנכרון נכשל');
 });
 
 test('streamEngine exports the plan §3 surface and stamps provenance versions', () => {
