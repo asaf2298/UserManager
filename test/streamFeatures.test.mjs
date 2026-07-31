@@ -250,6 +250,19 @@ test('transport classification distinguishes owner, debrid, p2p and external', (
   );
 });
 
+test('an http-wrapped torrent from a non-debrid provider is still P2P, not instant-ready', () => {
+  // Regression: an unregistered addon ("Meteor") wrapped a real, thin-seeder
+  // torrent in an http URL and it was previously misclassified as
+  // GENERIC_HTTP (flat F=0.90, labeled "confirmed ready") instead of P2P
+  // (seed-health dependent) -- the http locator alone proved nothing about
+  // whether the file was actually cached.
+  const unknown = resolveProvider(fx.UNKNOWN_HOST, { configured: true });
+  assert.equal(
+    classifyTransport(fx.httpWrappedThinP2P, unknown, { claim: CACHE_CLAIM.NONE, marker: null }),
+    TRANSPORT.P2P,
+  );
+});
+
 test('providers with no cache vocabulary cannot emit a claim', () => {
   const knaben = resolveProvider(fx.KNABEN, { configured: true });
   const claim = parseCacheClaim(knaben, '[TB+] totally cached instant');
