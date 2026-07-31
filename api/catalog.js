@@ -194,21 +194,18 @@ async function getSearchCatalogs(baseUrl, type, headers, excludeTypes = null, al
     }
 }
 
-async function getAllSearchCatalogs(tvAddonUrl, addonUrls, reqType, proxyHeaders, {
+async function getAllSearchCatalogs(addonUrls, reqType, proxyHeaders, {
     excludeTypes = null,
     includeVip = true,
     allTypes = false
 } = {}) {
-    const sources = [
-        ...(includeVip && tvAddonUrl ? [tvAddonUrl] : []),
-        ...addonUrls
-            .map(u => u.replace(/\/manifest\.json$/i, '').replace(/\/$/, ''))
-            .filter(u => {
-                if (!u || u === tvAddonUrl) return false;
-                if (!includeVip && isVipSearchHost(u)) return false;
-                return true;
-            })
-    ];
+    const sources = addonUrls
+        .map(u => u.replace(/\/manifest\.json$/i, '').replace(/\/$/, ''))
+        .filter(u => {
+            if (!u) return false;
+            if (!includeVip && isVipSearchHost(u)) return false;
+            return true;
+        });
 
     const perSource = await Promise.all(
         sources.map(url => getSearchCatalogs(url, reqType, proxyHeaders, excludeTypes, allTypes))
@@ -283,7 +280,7 @@ export default async function handler(req, res) {
 
             const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
             const allSearchCatalogs = await getAllSearchCatalogs(
-                tvAddonUrl, addonUrls, reqType, proxyHeaders,
+                addonUrls, reqType, proxyHeaders,
                 {
                     excludeTypes: isComplete ? ['movie', 'series'] : null,
                     includeVip,
