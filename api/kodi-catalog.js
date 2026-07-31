@@ -28,6 +28,8 @@ function isLiveChannel(catalogId) {
   return String(catalogId || '') === LIVE_TV_CATALOG_ID;
 }
 
+export { isLiveChannel, mapMetaToKodiItem };
+
 async function getAvailableCatalogs(baseUrl) {
   const cleanBase = baseUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
   const res = await fetchWithTimeout(`${cleanBase}/manifest.json`, { headers: { 'Accept': 'application/json' } }, 7000);
