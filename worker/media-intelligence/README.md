@@ -5,7 +5,7 @@ Telegram→Stremio addon. Three jobs, in priority order of cost:
 
 | Task | Cadence | Cost |
 | --- | --- | --- |
-| Subtitle alignment (`ffprobe` + `ffmpeg` + `alass`) | on demand, **one at a time** | heavy |
+| Subtitle alignment (`ffprobe` + `ffmpeg` + `alass`) — also feeds `integrity` trust evidence | on demand, **one at a time** | heavy |
 | TorBox cache audits (`checkcached`) | at most 1 batch/min, ≤100 hashes | light |
 | Trust snapshot publication + TTL sweep | daily / hourly | light |
 
@@ -106,3 +106,33 @@ never that a viewer played anything:
 
 Missing clicks, URL-only streams, and absent audits never lower a provider's
 trust. Absence of evidence is not evidence of failure.
+
+## Integrity evidence from the subtitle-sync probe
+
+`cache_claim` (above) grades whether a provider's "instantly cached" tag is
+truthful. It says nothing about whether the claimed file is actually real,
+playable content — a wrong or corrupt release never lowered any provider's
+score, because nothing inspected the actual bytes.
+
+The subtitle-sync probe already does that inspection for free: every sync job
+resolves a TorBox CDN locator and runs `ffprobe` against the real file
+(above). Whether that succeeds or fails is graded as `integrity` evidence and
+written to `personal_provider_observations` with `source: controlled_probe`,
+using the same falsifiable-claim philosophy as cache-claim audits:
+
+| Observation | Meaning |
+| --- | --- |
+| `ffprobe` opens the file and returns real stream data | success — regardless of what happens after (no text tracks, extraction/alass failure are irrelevant to integrity) |
+| `ffprobe` fails against the TorBox-resolved (`torbox_cdn`) URL | failure — TorBox itself vouched the file is reachable, so a real parse failure means the release is fake/corrupt/mislabeled |
+| `ffprobe` fails against the raw offered URL, or no reachable source at all | **no observation** — a Cloudflare/geo block looks identical to a genuine parse failure, so it is not held against the provider |
+
+Sampling here is demand-driven (whatever the viewer happens to be watching),
+not the uniform sampling `personal_ranking_audit_queue` uses for cache-claim
+audits. Inverse-propensity weighting (`lib/providerTrust.js`) corrects the
+*magnitude* of that but not the underlying selection bias — an accepted
+approximation, not a silent one.
+
+No new TorBox calls, no new CPU cost, and no changes needed in
+`trustAggregator.mjs` / `lib/providerTrust.js`: both already handled the
+`integrity` metric generically since the original media-intelligence
+migration — they just had nothing writing to it until now.
