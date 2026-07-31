@@ -136,3 +136,29 @@ No new TorBox calls, no new CPU cost, and no changes needed in
 `trustAggregator.mjs` / `lib/providerTrust.js`: both already handled the
 `integrity` metric generically since the original media-intelligence
 migration — they just had nothing writing to it until now.
+
+## Verification performed for the integrity probe
+
+Both `gradeIntegrityProbe` branches were exercised end-to-end against real
+data, not just synthetic unit tests:
+
+- **True path**: a real TorBox-resolved CDN locator for a live, cached
+  release was fetched and the bytes were run through the unmodified
+  `probeSubtitleTracks` ffprobe wrapper, which correctly parsed the file's
+  real embedded subtitle streams (one SRT track, five PGS tracks across
+  English/French/German/Spanish) → graded `outcome: true`.
+- **False path**: genuinely random bytes run through the same function
+  produced a clean ffprobe parse failure (`EBML header parsing failed`, no
+  crash, no false success) → graded `outcome: false` when the source is
+  `torbox_cdn`.
+- **TorBox contract**: `resolveProbeDownloadUrl` was confirmed live to return
+  `source: 'torbox_cdn'` for a real cached hash, which is exactly the
+  `sourceKind` value the false-path grading depends on.
+
+Not yet verified: a real subtitle-sync job running `ffprobe` against a
+network URL directly, end to end, on the actual droplet. Some restricted
+network sandboxes (used to develop this feature) cause `ffprobe` to crash on
+*any* network URL, HTTP or HTTPS alike, unrelated to this codebase or to
+TorBox — if you hit that while testing locally, fetch the bytes with a
+normal HTTP client first and point `probeSubtitleTracks` at the local file
+instead; ffprobe parses a local path and a URL identically.
