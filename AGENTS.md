@@ -64,7 +64,7 @@ node --env-file=.env.local dev-server.mjs   # serves on http://localhost:3000
 
 - Stremio routes: `http://localhost:3000/<USER_KEY>/manifest.json`, `/<USER_KEY>/catalog/<type>/<id>.json`, `/<USER_KEY>/meta/<type>/<id>.json`, `/<USER_KEY>/stream/<type>/<id>.json`, `/<USER_KEY>/subtitles/...`
 - Sync: `/api/sub-sync?...` (no-store; selection-triggered)
-- Kodi routes: `/api/kodi?imdb_id=tt...&type=movie` and `/api/kodi-catalog?...`
+- Kodi routes: `/api/kodi?imdb_id=tt...&type=movie` and `/api/kodi-catalog?...`. `/api/kodi?...&type=tv` proxies straight to `TV_ADDON_URL/stream/tv/{id}` (mirrors api/stream.js's tv/channel branch -- Kan-Box ids mean nothing to the debrid ranking pipeline). `/api/kodi-catalog?list=anime_genres&genres=A,B,C` fans out one request per genre x per type to AnimeIL's real catalog (`https://addon.animeil.qzz.io`, one genre per request only) and merges by id -- this is how the separate `Kodi-repo` client's pure-anime rows are built; Cinemeta is never used for anime (`genre=Animation` there mixes in non-anime Western animation).
 - No hot reload: `dev-server.mjs` caches imported handler modules, so **restart the node process** after editing `api/` or `lib/` code.
 
 ### Configuration (`.env.local`, not committed)
