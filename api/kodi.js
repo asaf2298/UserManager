@@ -11,6 +11,7 @@
 // window. Callers without a recognized userKey keep the previous behavior:
 // the fixed "kodi" profile. The response shape is unchanged for existing
 // plugin versions.
+import fetch from 'node-fetch';
 import { retrieveRankAndSelect } from '../lib/streamEngine.js';
 import { resolveProfile } from '../lib/streamRanker.js';
 import { RESOLUTION } from '../lib/releaseParser.js';
@@ -49,6 +50,40 @@ export function resolveKodiProfile(userKey) {
   return { profileName, profile };
 }
 
+/**
+ * Live TV never goes through retrieveRankAndSelect -- Kan-Box channel ids mean
+ * nothing to Torrentio/debrid addons, so that pipeline would always return
+ * zero results for them. Mirrors api/stream.js's own tv/channel branch: proxy
+ * straight to TV_ADDON_URL and reshape the response into the Kodi thin-client
+ * contract (title/url/quality/sizeGB). `quality`/`sizeGB` are omitted -- a
+ * live channel has no discrete release quality, and the Kodi client already
+ * defaults `quality` to 'SD' when absent.
+ */
+async function getKodiTvStreams(idWithExt) {
+  const tvAddonUrl = process.env.TV_ADDON_URL;
+  if (!tvAddonUrl) return [];
+  const cleanTvUrl = tvAddonUrl.replace(/\/manifest\.json$/i, '').replace(/\/$/, '');
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 9500);
+  try {
+    const res = await fetch(`${cleanTvUrl}/stream/tv/${idWithExt}`, {
+      headers: { Accept: 'application/json, text/plain, */*' },
+      signal: controller.signal,
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const streams = Array.isArray(data?.streams) ? data.streams : [];
+    return streams
+      .filter(s => s && s.url)
+      .map(s => ({ title: String(s.title || s.name || 'שידור חי').replace(/\n/g, ' ').trim(), url: s.url }));
+  } catch (e) {
+    console.error(`[PERSONAL KODI] 💥 live TV proxy error: ${e.message}`);
+    return [];
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -61,6 +96,12 @@ export default async function handler(req, res) {
     const idWithExt = (type === 'series' && season && episode)
       ? `${imdb_id}:${season}:${episode}.json`
       : `${imdb_id}.json`;
+
+    if (type === 'tv') {
+      const results = await getKodiTvStreams(idWithExt);
+      console.log(`[PERSONAL KODI] 📺 ${imdb_id} live TV → ${results.length} stream(s)`);
+      return res.status(200).json({ results });
+    }
 
     const { profileName, profile } = resolveKodiProfile(userKey);
     const result = await retrieveRankAndSelect(type, idWithExt, {

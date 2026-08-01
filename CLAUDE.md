@@ -12,8 +12,9 @@ The ecosystem consists of the following distinct but communicating sub-systems:
 
 - **Personal (previously Vecret, previously Esay) — The Aggregator** (this repo): the central hub and deterministic ranking engine that fans out requests and mathematically scores/deduplicates streams (Node.js / Vercel).
 - **Telegram Addon:** a dynamic, high-speed HTTP proxy for streaming large media files directly from private channels (Python / FastAPI).
-- **KanBox Addon:** a live TV, EPG, and VOD provider handling Israeli content (Node.js) — has a separate scraper repo and addon repo.
+- **KanBox Addon:** a live TV, EPG, and VOD provider handling Israeli content (Node.js) — has a separate scraper repo (`Stremio-KanBoxRepos`) and addon repo (`Stremio-KanBoxAddon`, which also exposes the same data as a dedicated `/bingecat` Stremio addon for Live TV only — this repo's `TV_ADDON_URL` proxies to that same backend).
 - **Einthusan Addon:** an automated headless scraping and media extraction service for South Asian content (Node.js / Puppeteer).
+- **Kodi client (`Kodi-repo`):** a separate repo/companion Kodi addon (`plugin.video.personal`, Python) that consumes this repo's `api/kodi.js` / `api/kodi-catalog.js` as its entire backend. Live TV there is 3 rows: Kan-Box (this repo's `TV_ADDON_URL` proxy), and Pluto TV / Roku US channels via deep links directly into the real, separately-installed SlyGuy addons (no reimplementation of their stream resolution here). Anime there is AnimeIL-only (`https://addon.animeil.qzz.io`), never Cinemeta (`genre=Animation` there mixes in non-anime Western animation).
 
 ## Strict Operating Rules
 
