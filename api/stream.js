@@ -8,6 +8,7 @@ import { RESOLUTION } from '../lib/releaseParser.js';
 import { TRANSPORT, CACHE_CLAIM } from '../lib/providerCapabilities.js';
 import { upsertStreamSightings } from '../lib/streamSighting.js';
 import { recordRankingAudits } from '../lib/rankingTelemetry.js';
+import { waitUntil } from '@vercel/functions';
 import {
   isIdResolveEnabled,
   isIdResolveShadow,
@@ -295,14 +296,16 @@ export default async function handler(req, res) {
 
     logRankingDiagnostics(result.selected, result.diagnostics, profile);
 
-    // Auxiliary writes are fire-and-forget: the response must not wait on them,
-    // and a Supabase outage must not change what the viewer sees.
-    upsertStreamSightings({
+    // Auxiliary writes must not delay the response, but they also must not race
+    // it: Vercel freezes the invocation the instant the handler returns, which
+    // tears down any in-flight socket and aborts a plain fire-and-forget write.
+    // waitUntil() keeps the invocation alive until these settle.
+    waitUntil(upsertStreamSightings({
       contentType: type,
       contentId: idNoExt,
       candidates: result.selected,
-    }).catch(() => {});
-    recordRankingAudits(result.selected, { contentId: idNoExt }).catch(() => {});
+    }).catch(() => {}));
+    waitUntil(recordRankingAudits(result.selected, { contentId: idNoExt }).catch(() => {}));
 
     const finalStreams = formatForStremio(result.selected);
     return res.status(200).json({ streams: finalStreams });

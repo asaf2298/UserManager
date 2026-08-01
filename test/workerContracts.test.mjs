@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gradeClaim } from '../worker/media-intelligence/auditRunner.mjs';
 import { evaluateHostBusyRow } from '../worker/media-intelligence/hostBusy.mjs';
-import { priorFor } from '../worker/media-intelligence/trustAggregator.mjs';
+import { priorFor, evaluateSnapshotFreshness } from '../worker/media-intelligence/trustAggregator.mjs';
 import { METRIC } from '../lib/providerTrust.js';
 import { isCollectionThin } from '../lib/streamEngine.js';
 
@@ -21,6 +21,35 @@ test('gradeClaim treats missing checks and non-TorBox claims as no-observation',
   assert.equal(gradeClaim('cache_positive', undefined).outcome, null);
   assert.equal(gradeClaim('direct_owner', true).outcome, null);
   assert.equal(gradeClaim('unknown', false).outcome, null);
+});
+
+// #54 -- a stalled learning loop must be a loud worker-log warning, not silence.
+test('evaluateSnapshotFreshness: a read failure is not reported as staleness (avoid double-reporting)', () => {
+  const result = evaluateSnapshotFreshness(null, 1000, Date.now());
+  assert.equal(result.stale, false);
+  assert.equal(result.reason, null);
+});
+
+test('evaluateSnapshotFreshness: no snapshot ever published is stale', () => {
+  const result = evaluateSnapshotFreshness([], 1000, Date.now());
+  assert.equal(result.stale, true);
+  assert.equal(result.reason, 'never_published');
+});
+
+test('evaluateSnapshotFreshness: a recent snapshot is fresh', () => {
+  const now = Date.parse('2026-08-01T12:00:00Z');
+  const rows = [{ computed_at: '2026-08-01T11:00:00Z', snapshot_version: 'snap-2026-08-01T11-00-00-000Z' }];
+  const result = evaluateSnapshotFreshness(rows, 3 * 24 * 60 * 60_000, now);
+  assert.equal(result.stale, false);
+  assert.equal(result.ageMs, 60 * 60_000);
+});
+
+test('evaluateSnapshotFreshness: a snapshot older than the threshold is stale', () => {
+  const now = Date.parse('2026-08-04T12:00:01Z');
+  const rows = [{ computed_at: '2026-08-01T12:00:00Z', snapshot_version: 'snap-2026-08-01T12-00-00-000Z' }];
+  const result = evaluateSnapshotFreshness(rows, 3 * 24 * 60 * 60_000, now);
+  assert.equal(result.stale, true);
+  assert.equal(result.reason, 'too_old');
 });
 
 test('host busy lease requires a live unexpired row', () => {

@@ -15,7 +15,7 @@
 import { assertConfigured, torboxConfigured, LIMITS, WORKER_ID, log } from './config.mjs';
 import { isHostBusy, watchHostBusy } from './hostBusy.mjs';
 import { runAuditBatch } from './auditRunner.mjs';
-import { publishTrustSnapshot, countObservationsSince } from './trustAggregator.mjs';
+import { publishTrustSnapshot, countObservationsSince, checkTrustSnapshotStaleness } from './trustAggregator.mjs';
 import { claimSubtitleJob, processSubtitleJob, requeueJob } from './subtitleWorker.mjs';
 import { runCleanup } from './cleanup.mjs';
 
@@ -24,6 +24,7 @@ const state = {
   lastAuditAt: 0,
   lastSnapshotAt: 0,
   lastCleanupAt: 0,
+  lastStalenessCheckAt: 0,
   lastObservationCheck: new Date().toISOString(),
   jobsProcessed: 0,
 };
@@ -116,6 +117,14 @@ async function runLightTasks(now) {
   if (now - state.lastCleanupAt >= LIMITS.cleanupIntervalMs) {
     state.lastCleanupAt = now;
     await runCleanup().catch(err => log('cleanup', `error: ${err.message}`));
+  }
+
+  // A stalled learning loop (#54) has no other symptom -- ranking silently
+  // falls back to static priors with nothing erroring anywhere. Piggyback on
+  // the cleanup cadence: cheap, and frequent enough to catch a stall promptly.
+  if (now - state.lastStalenessCheckAt >= LIMITS.cleanupIntervalMs) {
+    state.lastStalenessCheckAt = now;
+    await checkTrustSnapshotStaleness(LIMITS.snapshotStaleAfterMs).catch(err => log('trust', `staleness check error: ${err.message}`));
   }
 }
 

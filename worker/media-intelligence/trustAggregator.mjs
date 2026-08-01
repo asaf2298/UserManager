@@ -133,3 +133,59 @@ export async function countObservationsSince(isoTimestamp) {
   const rows = await selectRows(OBSERVATIONS_TABLE, params, 2000);
   return Array.isArray(rows) ? rows.length : 0;
 }
+
+/**
+ * Pure decision logic for the staleness check, kept separate from the
+ * Supabase read so it is testable without a live/mocked backend.
+ *
+ * @param {Array|null} rows newest-first snapshot rows (computed_at, snapshot_version), or null on read failure
+ * @param {number} staleAfterMs age past which the newest snapshot counts as stale
+ * @param {number} now current time in ms, injectable for tests
+ * @returns {{ stale:boolean, reason:string|null, ageMs:number|null, version:string|null }}
+ */
+export function evaluateSnapshotFreshness(rows, staleAfterMs, now = Date.now()) {
+  if (rows === null) {
+    // Read failure (misconfigured/unreachable Supabase) is a distinct problem,
+    // already surfaced wherever that read is attempted; don't double-report.
+    return { stale: false, reason: null, ageMs: null, version: null };
+  }
+  if (!rows.length) {
+    return { stale: true, reason: 'never_published', ageMs: null, version: null };
+  }
+
+  const computedAt = Date.parse(rows[0].computed_at);
+  const ageMs = Number.isFinite(computedAt) ? now - computedAt : null;
+  if (ageMs === null || ageMs > staleAfterMs) {
+    return { stale: true, reason: 'too_old', ageMs, version: rows[0].snapshot_version };
+  }
+
+  return { stale: false, reason: null, ageMs, version: rows[0].snapshot_version };
+}
+
+/**
+ * A stalled learning loop (#54's failure mode) is otherwise completely silent:
+ * ranking quietly falls back to static priors forever and nothing errors.
+ * Surface it in the worker log instead.
+ *
+ * @param {number} staleAfterMs age past which the newest snapshot counts as stale
+ * @returns {Promise<{ stale:boolean, reason:string|null, ageMs:number|null, version:string|null }>}
+ */
+export async function checkTrustSnapshotStaleness(staleAfterMs) {
+  const params = new URLSearchParams({
+    select: 'computed_at,snapshot_version',
+    order: 'computed_at.desc',
+    limit: '1',
+  });
+  const rows = await selectRows(SNAPSHOTS_TABLE, params, 2000);
+  const result = evaluateSnapshotFreshness(rows, staleAfterMs);
+
+  if (result.reason === 'never_published') {
+    log('trust', '⚠️ staleness check: no trust snapshot has ever been published — ranking is on static priors');
+  } else if (result.reason === 'too_old') {
+    log('trust', `⚠️ staleness check: newest snapshot (${result.version}) is ${
+      result.ageMs === null ? 'of unknown age' : `${Math.round(result.ageMs / 3_600_000)}h old`
+    } — learning loop may be stalled`);
+  }
+
+  return result;
+}
