@@ -172,6 +172,21 @@ test('api/subtitles.js: needPeek is sorted deterministically before slicing to 1
   );
 });
 
+// #58 -- Stremio renders `label` and drops `title` on deserialization, so
+// every subtitle's score/provider/sync badge was invisible and collapsed into
+// one identical row per language. WP-12: held for explicit owner sign-off
+// (user-visible), landed on a separate branch/PR -- this pins the contract so
+// it can't silently regress once approved.
+test('api/subtitles.js: cleanedSubs carry a non-URL label alongside title', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../api/subtitles.js'), 'utf8');
+  const pushBlock = source.slice(source.indexOf('cleanedSubs.push({'), source.indexOf('cleanedSubs.push({') + 700);
+  assert.match(pushBlock, /label:\s*finalTitle/, 'cleanedSubs must set label -- Stremio ignores title entirely');
+  assert.doesNotMatch(pushBlock, /label:\s*.*url/i, 'label must never fall back to a URL (hasValidLabel rejects it)');
+
+  const stripBlock = source.slice(source.indexOf('responseSubs = ['), source.indexOf('responseSubs = [') + 300);
+  assert.doesNotMatch(stripBlock, /\blabel\b/, 'label must not be stripped before the response is sent');
+});
+
 test('api/sub-proxy is encoding-only: no offsetMs and rejects bad urls', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../api/sub-proxy.js'), 'utf8');
   assert.equal(source.includes('offsetMs'), false, 'sub-proxy must not implement offsetMs');
