@@ -11,6 +11,7 @@ import { resolveProvider } from '../lib/providerCapabilities.js';
 import { computeBaseScore, locatorHash, resolveProfile, scoreCandidates } from '../lib/streamRanker.js';
 import { deduplicateCandidates } from '../lib/streamDedup.js';
 import { selectStreams } from '../lib/streamSelector.js';
+import { snapshotHasMetric, METRIC } from '../lib/providerTrust.js';
 import * as fx from './fixtures/streams.mjs';
 
 function featureContext(overrides = {}) {
@@ -137,4 +138,59 @@ test('family rejects CAM even when the list is short', () => {
   const { profile, representatives } = scoredPool([fx.camRip, fx.vipKanBox], 'family');
   const { selected } = selectStreams(representatives, profile);
   assert.ok(selected.every(row => !row.features.isCam));
+});
+
+// #54 -- a missing/empty integrity snapshot must not silently throttle every
+// provider via caps.unprovenProvider. See lib/streamSelector.js WP-3.
+test('snapshotHasMetric: true only when some entry carries the requested metric', () => {
+  assert.equal(snapshotHasMetric(undefined, METRIC.INTEGRITY), false);
+  assert.equal(snapshotHasMetric({ byKey: new Map() }, METRIC.INTEGRITY), false);
+  assert.equal(
+    snapshotHasMetric({ byKey: new Map([['torrentio||unknown|movie||cache_claim', {}]]) }, METRIC.INTEGRITY),
+    false,
+  );
+  assert.equal(
+    snapshotHasMetric({ byKey: new Map([['torrentio||unknown|movie||integrity', {}]]) }, METRIC.INTEGRITY),
+    true,
+  );
+});
+
+test('unprovenProvider cap is disabled while no integrity snapshot exists (#54)', () => {
+  const streams = [];
+  for (let i = 0; i < 3; i++) {
+    streams.push(fx.withSource({
+      name: '[TB+] Torrentio 1080p',
+      title: `Dune.Part.Two.2024.1080p.WEB-DL.x264-TGRP${i}\n👤 ${30 + i} 💾 ${(6 + i / 20).toFixed(1)} GB`,
+      infoHash: `${String(i).padStart(4, '0')}ccccddddeeeeffffaaaa11112222333344`.slice(0, 40),
+      url: `https://cdn.example.net/dl/wp3/${i}.mkv`,
+    }, fx.TORRENTIO));
+  }
+  // friends_light: caps.provider = 3, caps.unprovenProvider = 1 -- exactly enough
+  // supply that the old behavior and the fixed behavior diverge visibly.
+  const { profile, representatives } = scoredPool(streams, 'friends_light');
+  assert.equal(profile.caps.unprovenProvider, 1);
+  assert.ok(representatives.every(r => r.features.trustProven === false), 'fixture pool must be unproven');
+
+  const degraded = { version: 'static-priors', byKey: new Map() };
+  const { selected, stats } = selectStreams(representatives, profile, degraded);
+  assert.equal(selected.length, 3, 'the provider cap (3), not the disabled unproven cap, should be the only limit');
+  assert.equal(stats.relaxed, false, 'nothing should have been cap-blocked to begin with');
+});
+
+test('unprovenProvider cap still holds once an integrity snapshot exists (#54)', () => {
+  const streams = [];
+  for (let i = 0; i < 3; i++) {
+    streams.push(fx.withSource({
+      name: '[TB+] Torrentio 1080p',
+      title: `Dune.Part.Two.2024.1080p.WEB-DL.x264-TGRP${i}\n👤 ${30 + i} 💾 ${(6 + i / 20).toFixed(1)} GB`,
+      infoHash: `${String(i).padStart(4, '0')}ccccddddeeeeffffaaaa11112222333344`.slice(0, 40),
+      url: `https://cdn.example.net/dl/wp3b/${i}.mkv`,
+    }, fx.TORRENTIO));
+  }
+  const { profile, representatives } = scoredPool(streams, 'friends_light');
+
+  const populated = { version: 'v1', byKey: new Map([['someprovider||unknown|movie||integrity', { trust: 0.5 }]]) };
+  const { selected, stats } = selectStreams(representatives, profile, populated);
+  assert.ok(selected.length < 3, 'the unproven cap must still gate this provider once trust data exists at all');
+  assert.ok(stats.capBlocked.unprovenProvider >= 1, 'at least one candidate must have been blocked by the cap');
 });

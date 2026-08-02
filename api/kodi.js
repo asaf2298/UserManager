@@ -17,6 +17,7 @@ import { resolveProfile } from '../lib/streamRanker.js';
 import { RESOLUTION } from '../lib/releaseParser.js';
 import { upsertStreamSightings } from '../lib/streamSighting.js';
 import { recordRankingAudits } from '../lib/rankingTelemetry.js';
+import { waitUntil } from '@vercel/functions';
 
 /** Kodi expects these exact quality labels. */
 const QUALITY_LABELS = {
@@ -124,8 +125,10 @@ export default async function handler(req, res) {
     );
 
     const contentId = idWithExt.replace(/\.json$/i, '');
-    upsertStreamSightings({ contentType: type, contentId, candidates: playable }).catch(() => {});
-    recordRankingAudits(result.selected, { contentId }).catch(() => {});
+    // waitUntil(): Vercel freezes the invocation the instant the handler
+    // returns, which tears down a plain fire-and-forget write mid-flight.
+    waitUntil(upsertStreamSightings({ contentType: type, contentId, candidates: playable }).catch(() => {}));
+    waitUntil(recordRankingAudits(result.selected, { contentId }).catch(() => {}));
 
     return res.status(200).json({ results });
   } catch (error) {

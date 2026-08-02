@@ -44,6 +44,8 @@ export const LIMITS = {
   /** Trust recomputation cadence and the observation delta that forces one. */
   snapshotIntervalMs: 24 * 60 * 60_000,
   snapshotObservationThreshold: 100,
+  /** 3x the publish cadence: past this, a stalled loop is more likely than jitter. */
+  snapshotStaleAfterMs: 3 * 24 * 60 * 60_000,
 
   /** TTL sweep cadence. */
   cleanupIntervalMs: 60 * 60_000,

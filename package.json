@@ -5,6 +5,7 @@
   "main": "api/stream.js",
   "type": "module",
   "dependencies": {
+    "@vercel/functions": "^3.7.6",
     "node-fetch": "^3.3.2"
   }
 }
