@@ -9,6 +9,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   deduplicateCandidates, duplicateVerdict, releasesCompatible, canonicalPlaybackUrl, LSH_THRESHOLD,
+  MINHASH_SEEDS, MINHASH_VALUES,
 } from '../lib/streamDedup.js';
 import { extractFeatures } from '../lib/streamFeatures.js';
 import { resolveProvider } from '../lib/providerCapabilities.js';
@@ -183,4 +184,15 @@ test('LSH mode activates above the threshold and still merges exact duplicates',
     representatives.length <= withDupes.length - 1,
     'the known cross-provider duplicate must still collapse under LSH',
   );
+});
+
+// #56 -- a single 32-byte sha256 digest cannot supply 128 independent 32-bit
+// seeds; `(i*4) % 28` used to wrap after 7 distinct offsets, collapsing all 32
+// LSH bands to 7 distinct patterns and tanking recall above LSH_THRESHOLD.
+test('MinHash seeds are 128 distinct values, not a 7-value repeating cycle', () => {
+  assert.equal(MINHASH_SEEDS.length, MINHASH_VALUES);
+  assert.equal(new Set(MINHASH_SEEDS).size, 128, 'all 128 seeds must be distinct');
+  // The old bug's exact signature: seeds[i] === seeds[i+7] for every i.
+  const oldBugPeriod7 = MINHASH_SEEDS.slice(0, 121).every((v, i) => v === MINHASH_SEEDS[i + 7]);
+  assert.equal(oldBugPeriod7, false, 'must not still repeat with period 7');
 });

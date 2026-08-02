@@ -144,6 +144,34 @@ test('api/subtitles scoring equation matches the locked weights', () => {
   void FIELD;
 });
 
+// #57 -- unbounded substring matching classified "belarusian" as Russian and
+// "bengali" as English. Exact codes / word-boundary names only from here on.
+test('classifySubtitleLang: word-boundary matching does not misclassify unrelated languages', () => {
+  assert.equal(classifySubtitleLang('belarusian'), null);
+  assert.equal(classifySubtitleLang('bengali'), null);
+  assert.equal(classifySubtitleLang('prussian'), null);
+  assert.equal(classifySubtitleLang('slovengish'), null);
+  // Provider-specific Hebrew auto-translate markers must still work.
+  assert.equal(classifySubtitleLang('submaker'), 'heb');
+  assert.equal(classifySubtitleLang('make hebrew'), 'heb');
+  assert.equal(classifySubtitleLang('iw'), 'heb');
+  assert.equal(classifySubtitleLang('he-il'), 'heb');
+});
+
+// #57 -- needPeek used to follow provider arrival order, so which 12
+// subtitles got body-verified changed between otherwise-identical requests.
+test('api/subtitles.js: needPeek is sorted deterministically before slicing to 12', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../api/subtitles.js'), 'utf8');
+  const needPeekBlock = source.slice(source.indexOf('const needPeek ='), source.indexOf('const needPeek =') + 900);
+  assert.match(needPeekBlock, /\.filter\(/);
+  assert.match(needPeekBlock, /\.sort\(/);
+  assert.ok(
+    needPeekBlock.indexOf('.sort(') > needPeekBlock.indexOf('.filter(')
+      && needPeekBlock.indexOf('.slice(0, 12)') > needPeekBlock.indexOf('.sort('),
+    'order must be filter -> sort -> slice, not filter -> slice',
+  );
+});
+
 test('api/sub-proxy is encoding-only: no offsetMs and rejects bad urls', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../api/sub-proxy.js'), 'utf8');
   assert.equal(source.includes('offsetMs'), false, 'sub-proxy must not implement offsetMs');
@@ -191,6 +219,7 @@ test('streamEngine exports the plan §3 surface and stamps provenance versions',
   assert.ok(plan.plan.every(e => e.phase === 't0' || e.phase === 'immediate' || e.phase === 'deferred'));
 
   assert.equal(MODEL_VERSION, 'rank-v2.0');
-  assert.equal(PARSER_VERSION, 'release-v2');
+  // release-v2 -> release-v3: intentional bump for the MinHash seed fix (#56).
+  assert.equal(PARSER_VERSION, 'release-v3');
   assert.equal(CAPABILITY_VERSION, 'providers-v1');
 });
