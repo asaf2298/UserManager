@@ -3,6 +3,11 @@ import { isYastreamProviderId, rewriteMetaToImdbIfKnown } from '../lib/yastream.
 import { resolveProvider, evaluateVip } from '../lib/providerCapabilities.js';
 import { MIXED_SEARCH_CATALOG_IDS, MIXED_SEARCH_PREFIX, LIVE_TV_CATALOG_ID } from '../lib/catalogIds.js';
 import { DAILYMOTION_CATALOG_ID, getDailymotionCatalog } from '../lib/dailymotion.js';
+import { resolveAlternateQueries } from '../lib/search.js';
+
+/** #63: only chase an alternate-language title when wave 1 is genuinely thin. */
+const ALT_QUERY_THIN_THRESHOLD = 5;
+const ALT_QUERY_MIN_BUDGET_MS = 900;
 
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -71,10 +76,13 @@ async function awaitSoftDeadline(promises, softMs) {
     });
 }
 
-/** Short-lived cache of meta ids from fast mixed searches — used by "full" to avoid overlap. */
-const _fastSearchIdCache = new Map(); // queryKey → { ids: Set, ts }
-const FAST_SEARCH_CACHE_TTL_MS = 60_000;
-
+// #59: a per-instance cache of fast-search ids that "full" used to exclude
+// against was deleted here -- Stremio requests every catalog row in parallel
+// and Vercel spreads them across instances, so the cache was usually empty at
+// read time (duplicates) or occasionally populated (dedup), depending on
+// which instance happened to serve which request. Nondeterministic UI for no
+// reliable benefit; excludeTypes already partitions "fast" vs "full" work
+// deterministically without needing cross-request state.
 function searchQueryKey(extraPart) {
     const m = String(extraPart || '').match(/search=([^/]+)/);
     if (!m) return null;
@@ -83,29 +91,6 @@ function searchQueryKey(extraPart) {
     } catch {
         return m[1].toLowerCase().trim();
     }
-}
-
-function rememberFastSearchIds(queryKey, mode, ids) {
-    if (!queryKey || !ids?.size) return;
-    const key = `${queryKey}::${mode}`;
-    _fastSearchIdCache.set(key, { ids: new Set(ids), ts: Date.now() });
-}
-
-function collectFastSearchIds(queryKey) {
-    if (!queryKey) return new Set();
-    const out = new Set();
-    const now = Date.now();
-    for (const mode of ['movie', 'series', 'complete']) {
-        const key = `${queryKey}::${mode}`;
-        const entry = _fastSearchIdCache.get(key);
-        if (!entry) continue;
-        if (now - entry.ts > FAST_SEARCH_CACHE_TTL_MS) {
-            _fastSearchIdCache.delete(key);
-            continue;
-        }
-        for (const id of entry.ids) out.add(id);
-    }
-    return out;
 }
 
 let cachedTvCatalogIds = null;
@@ -141,12 +126,16 @@ async function getTvCatalogIds(tvAddonUrl, headers) {
     return await activeManifestFetch;
 }
 
+// Manifests change rarely (#59) -- 60s meant a cold instance re-fetched every
+// addon's manifest on nearly every request, and getTvCatalogIds already uses
+// 1h for the same class of data.
+const MANIFEST_TTL_MS = 30 * 60 * 1000;
 const _manifestCache = new Map();
-async function getCachedManifest(baseUrl, headers) {
+async function getCachedManifest(baseUrl, headers, timeoutMs = 7500) {
     const cached = _manifestCache.get(baseUrl);
-    if (cached && Date.now() - cached.ts < 60_000) return cached.manifest;
+    if (cached && Date.now() - cached.ts < MANIFEST_TTL_MS) return cached.manifest;
     try {
-        const res = await fetchWithTimeout(`${baseUrl}/manifest.json`, { headers }, 7500);
+        const res = await fetchWithTimeout(`${baseUrl}/manifest.json`, { headers }, timeoutMs);
         if (!res.ok) return null;
         const manifest = await res.json();
         _manifestCache.set(baseUrl, { manifest, ts: Date.now() });
@@ -169,9 +158,9 @@ function isVipSearchHost(url) {
  * @param {string|null} excludeTypes - when array, keep catalogs whose type is NOT in the list
  * @param {boolean} allTypes - when true, every searchable catalog (full mode)
  */
-async function getSearchCatalogs(baseUrl, type, headers, excludeTypes = null, allTypes = false) {
+async function getSearchCatalogs(baseUrl, type, headers, excludeTypes = null, allTypes = false, discoveryMs = 7500) {
     try {
-        const manifest = await getCachedManifest(baseUrl, headers);
+        const manifest = await getCachedManifest(baseUrl, headers, discoveryMs);
         if (!manifest) return [];
 
         let catalogs;
@@ -202,7 +191,8 @@ async function getSearchCatalogs(baseUrl, type, headers, excludeTypes = null, al
 async function getAllSearchCatalogs(tvAddonUrl, addonUrls, reqType, proxyHeaders, {
     excludeTypes = null,
     includeVip = true,
-    allTypes = false
+    allTypes = false,
+    discoveryMs = 7500
 } = {}) {
     const sources = [
         ...(includeVip && tvAddonUrl ? [tvAddonUrl] : []),
@@ -216,13 +206,13 @@ async function getAllSearchCatalogs(tvAddonUrl, addonUrls, reqType, proxyHeaders
     ];
 
     const perSource = await Promise.all(
-        sources.map(url => getSearchCatalogs(url, reqType, proxyHeaders, excludeTypes, allTypes))
+        sources.map(url => getSearchCatalogs(url, reqType, proxyHeaders, excludeTypes, allTypes, discoveryMs))
     );
 
     return perSource.flat();
 }
 
-function mergeMetas(results, { excludeIds = null, rewriteYastream = true } = {}) {
+function mergeMetas(results, { rewriteYastream = true } = {}) {
     const combinedMetas = [];
     const seenIds = new Set();
 
@@ -234,9 +224,6 @@ function mergeMetas(results, { excludeIds = null, rewriteYastream = true } = {})
             if (rewriteYastream && isYastreamProviderId(meta.id)) {
                 out = rewriteMetaToImdbIfKnown(meta);
             }
-            if (excludeIds && excludeIds.has(out.id)) continue;
-            // Also skip if the pre-rewrite provider id was already shown by a fast search
-            if (excludeIds && excludeIds.has(meta.id)) continue;
             if (seenIds.has(out.id)) continue;
             seenIds.add(out.id);
             combinedMetas.push(out);
@@ -285,6 +272,12 @@ export default async function handler(req, res) {
             // eats into this; soft deadline uses whatever remains so "full" cannot stick.
             // Fast trio target ~3s total; full target ~8s total (leave headroom).
             const hardBudgetMs = isFull ? 8000 : 3000;
+            // On a cold manifest cache, discovery alone could take up to the old
+            // 7500ms getCachedManifest timeout -- more than the entire 3000ms fast
+            // trio budget -- leaving softMs pinned at its 400ms floor (#59). Cap
+            // discovery itself to a fraction of the budget so the fan-out always
+            // gets real headroom.
+            const discoveryMs = Math.min(1200, Math.floor(hardBudgetMs / 3));
 
             const addonUrls = (process.env.ADDON_URLS || '').split('|||').map(u => u.trim()).filter(Boolean);
             const allSearchCatalogs = await getAllSearchCatalogs(
@@ -292,7 +285,8 @@ export default async function handler(req, res) {
                 {
                     excludeTypes: isComplete ? ['movie', 'series'] : null,
                     includeVip,
-                    allTypes: isFull
+                    allTypes: isFull,
+                    discoveryMs
                 }
             );
 
@@ -316,27 +310,46 @@ export default async function handler(req, res) {
             );
 
             const results = await awaitSoftDeadline(searchPromises, softMs);
-            const afterFanoutMs = Date.now() - handlerStarted;
             const queryKey = searchQueryKey(extraPart);
 
-            let excludeIds = null;
-            if (isFull) {
-                excludeIds = collectFastSearchIds(queryKey);
-                if (excludeIds.size > 0) {
-                    console.log(`[PERSONAL SEARCH] 🧹 full excludes ${excludeIds.size} ids already returned by fast searches`);
-                }
-            }
-
-            const { combinedMetas, seenIds } = mergeMetas(results, {
-                excludeIds,
+            let { combinedMetas } = mergeMetas(results, {
                 rewriteYastream: true
             });
 
-            if (!isFull) {
-                const mode = isComplete ? 'complete' : (cleanCatalogId.includes('series') ? 'series' : 'movie');
-                rememberFastSearchIds(queryKey, mode, seenIds);
+            // #63: buildSearchTitles/the Hebrew-Russian fallback (WP-15) only ever
+            // ran on the stream/subtitle paths, which already have a resolved
+            // title set from TMDB. The catalog searchbar forwards the user's raw
+            // query verbatim to every addon, so "שובר שורות" never reached
+            // providers indexing English release names and vice versa. Only spend
+            // the extra round trip when wave 1 came back thin and there's still
+            // real budget left.
+            const remainingMs = hardBudgetMs - (Date.now() - handlerStarted);
+            if (combinedMetas.length < ALT_QUERY_THIN_THRESHOLD && remainingMs > ALT_QUERY_MIN_BUDGET_MS && queryKey) {
+                const alternates = await resolveAlternateQueries(queryKey);
+                if (alternates.length) {
+                    const altBudgetMs = Math.max(400, hardBudgetMs - (Date.now() - handlerStarted));
+                    const altPromises = [];
+                    for (const alt of alternates) {
+                        const altExtraPart = extraPart.replace(/search=[^/]+/, `search=${encodeURIComponent(alt)}`);
+                        for (const cat of allSearchCatalogs) {
+                            altPromises.push(fetchJsonWithTimeout(
+                                `${cat.baseUrl}/catalog/${cat.type}/${cat.id}/${altExtraPart}`,
+                                { headers: proxyHeaders },
+                                altBudgetMs
+                            ));
+                        }
+                    }
+                    const altResults = await awaitSoftDeadline(altPromises, altBudgetMs);
+                    // mergeMetas already dedups by id -- run once over both waves
+                    // together rather than merging two separately-deduped sets.
+                    ({ combinedMetas } = mergeMetas([...results, ...altResults], { rewriteYastream: true }));
+                    console.log(
+                        `[PERSONAL SEARCH] 🌐 wave 1 thin -- tried alternate title(s) [${alternates.join(', ')}], now ${combinedMetas.length} metas`
+                    );
+                }
             }
 
+            const afterFanoutMs = Date.now() - handlerStarted;
             console.log(
                 `[PERSONAL SEARCH] ✅ ${cleanCatalogId} done in ${afterFanoutMs}ms → ${combinedMetas.length} metas`
             );
@@ -381,3 +394,5 @@ export default async function handler(req, res) {
         return res.status(200).json({ metas: [] });
     }
 }
+
+export { mergeMetas, searchQueryKey };

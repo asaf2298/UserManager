@@ -12,6 +12,17 @@ const httpAgent = new http.Agent();
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 const dynamicAgent = (_parsedURL) => _parsedURL.protocol === 'http:' ? httpAgent : httpsAgent;
 
+/**
+ * Hobby ceiling is 10s (#57): the old race (<=9000ms) + peekSrt x12 run AFTER
+ * it (<=2500ms) + hasKnownNoEmbeds (~200ms) could total ~11.7s on exactly the
+ * "not enough Hebrew yet, extend" path -- the slowest, most-wanted requests
+ * were the ones that got killed. Leave real room for peek + Supabase + JSON
+ * serialization.
+ */
+const PROVIDER_RACE_MS = 3500;
+const PROVIDER_RACE_EXTENDED_MS = 5000;
+const PEEK_BUDGET_MS = 1200;
+
 /** Duration agreement tolerance used by the Gaussian duration term. */
 const DURATION_MATCH_PCT = 0.05;
 
@@ -280,8 +291,9 @@ export default async function handler(req, res) {
             const reqTypeStr = isSearch ? '(Text Search)' : '(IMDb ID)';
 
             try {
-                // כל ספק מקבל 9 שניות גג בפני עצמו
-                const response = await fetchWithTimeout(targetUrl, fetchOptions, 9000);
+                // Per-provider ceiling now matches the extended race window (#57)
+                // rather than outliving it.
+                const response = await fetchWithTimeout(targetUrl, fetchOptions, PROVIDER_RACE_EXTENDED_MS);
                 const elapsed = Date.now() - startTime;
 
                 if (!response.ok) return;
@@ -326,13 +338,13 @@ export default async function handler(req, res) {
                 const hebCount = gatheredSubs.filter(sub => classifySubtitleLang(sub.lang) === 'heb').length;
 
                 if (hebCount >= 3) {
-                    console.log(`[PERSONAL TIMEOUT] ⏱️ עברו 6 שניות. יש ${hebCount} כתוביות בעברית -> חותך את ההמתנה!`);
-                    resolve('TIMEOUT_6');
+                    console.log(`[PERSONAL TIMEOUT] ⏱️ עברו ${PROVIDER_RACE_MS}ms. יש ${hebCount} כתוביות בעברית -> חותך את ההמתנה!`);
+                    resolve('TIMEOUT_FAST');
                 } else {
-                    console.log(`[PERSONAL TIMEOUT] ⏱️ עברו 6 שניות, חסרות כתוביות בעברית (${hebCount}/3) -> מאריך ל-9 שניות...`);
-                    setTimeout(() => resolve('TIMEOUT_9'), 3000);
+                    console.log(`[PERSONAL TIMEOUT] ⏱️ עברו ${PROVIDER_RACE_MS}ms, חסרות כתוביות בעברית (${hebCount}/3) -> מאריך ל-${PROVIDER_RACE_EXTENDED_MS}ms...`);
+                    setTimeout(() => resolve('TIMEOUT_EXTENDED'), PROVIDER_RACE_EXTENDED_MS - PROVIDER_RACE_MS);
                 }
-            }, 6000);
+            }, PROVIDER_RACE_MS);
         });
 
         const raceResult = await Promise.race([
@@ -389,7 +401,7 @@ export default async function handler(req, res) {
                         'Range': 'bytes=-65536',
                     },
                     agent: dynamicAgent
-                }, 2500);
+                }, PEEK_BUDGET_MS);
                 if (!resp.ok) return { durationMin: null, scriptLang: null };
                 // Servers that ignore suffix ranges answer 200 with the whole body --
                 // still correct, hence the bound here rather than trusting the range.
