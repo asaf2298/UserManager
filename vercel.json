@@ -25,5 +25,10 @@
         }
       ]
     }
-  ]
+  ],
+  "functions": {
+    "api/subtitles.js": {
+      "maxDuration": 10
+    }
+  }
 }
