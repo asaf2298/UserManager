@@ -502,7 +502,14 @@ export default async function handler(req, res) {
                 id: `personal_${index}_${safeId}`,
                 url: buildProxyUrl(req, String(sub.url)),
                 lang,
-                title: finalTitle,
+                // Stremio renders `label` (SubtitleVariant.tsx) and drops `title` on
+                // deserialization -- without this every subtitle collapsed into one
+                // identical row per language (#58). Keep `lang` a clean ISO code so
+                // language grouping and preferred-subtitle-language auto-select keep
+                // working; `hasValidLabel` also rejects labels starting with `http`,
+                // so never fall back to a URL here.
+                label: finalTitle,
+                title: finalTitle, // retained for any non-Stremio consumer
                 // Kept only for sorting and sync-base selection; stripped before response.
                 sourceUrl: String(sub.url),
                 _classifiedLang: lang,
