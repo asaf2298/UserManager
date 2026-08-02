@@ -147,34 +147,32 @@ function durationWithinTolerance(subMin, videoMin) {
     return deviation <= DURATION_MATCH_PCT;
 }
 
+const LANG_MAP = new Map([
+    ...['he', 'heb', 'hebrew', 'iw', 'he-il', 'עברית'].map(k => [k, 'heb']),
+    ...['ru', 'rus', 'russian', 'ru-ru'].map(k => [k, 'rus']),
+    ...['en', 'eng', 'english', 'en-us', 'en-gb'].map(k => [k, 'eng']),
+]);
+
 /**
  * Map provider lang → heb|eng|rus. Returns null for unknown/other.
  * NEVER defaults unknown → heb (that caused English tracks labeled Hebrew on TVs).
+ * Exact codes plus word-boundary names only: unbounded substring matching used
+ * to classify "belarusian" as Russian and "bengali" as English (#57).
  */
 function classifySubtitleLang(rawLang) {
     if (!rawLang) return null;
     const l = String(rawLang).toLowerCase().trim();
 
-    const isHeb =
-        ['he', 'heb', 'hebrew', 'iw', 'he-il', 'עברית'].includes(l) ||
-        l.includes('heb') ||
-        l.includes('עברית') ||
-        l.includes('make hebrew') ||
-        l.includes('submaker');
-    if (isHeb) return 'heb';
+    const direct = LANG_MAP.get(l);
+    if (direct) return direct;
 
-    const isRus =
-        l === 'ru' || l === 'rus' || l === 'russian' ||
-        l.startsWith('ru ') || l.startsWith('rus ') ||
-        (l.includes('rus') && !l.includes('heb'));
-    if (isRus) return 'rus';
-
-    const isEng =
-        l === 'en' || l === 'eng' || l === 'english' || l === 'en-us' || l === 'en-gb' ||
-        l.startsWith('en ') || l.startsWith('eng ') ||
-        (l.includes('eng') && !l.includes('heb'));
-    if (isEng) return 'eng';
-
+    // Provider-specific Hebrew auto-translate markers stay substring-based --
+    // these are not language names, so they can't collide the way "rus"/"eng"
+    // as bare substrings did.
+    if (/\bheb(rew)?\b/.test(l) || l.includes('עברית')
+        || l.includes('make hebrew') || l.includes('submaker')) return 'heb';
+    if (/\brus(sian)?\b/.test(l)) return 'rus';
+    if (/\beng(lish)?\b/.test(l)) return 'eng';
     return null;
 }
 
@@ -382,11 +380,20 @@ export default async function handler(req, res) {
         async function peekSrt(url) {
             try {
                 const resp = await fetchWithTimeout(url, {
-                    headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'text/plain,*/*', 'Range': 'bytes=0-65535' },
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0',
+                        'Accept': 'text/plain,*/*',
+                        // Duration is the LAST cue, so read the tail. A leading range only
+                        // ever saw ~46 minutes of a feature-length file and made every
+                        // long subtitle look wildly out of sync (#57).
+                        'Range': 'bytes=-65536',
+                    },
                     agent: dynamicAgent
                 }, 2500);
                 if (!resp.ok) return { durationMin: null, scriptLang: null };
-                const text = await resp.text();
+                // Servers that ignore suffix ranges answer 200 with the whole body --
+                // still correct, hence the bound here rather than trusting the range.
+                const text = (await resp.text()).slice(-200_000);
                 return {
                     durationMin: parseSubtitleDurationMinutes(text),
                     scriptLang: detectSubtitleScriptLang(text),
@@ -411,6 +418,18 @@ export default async function handler(req, res) {
 
         const needPeek = withMeta
             .filter(x => (videoRuntimeMin && !x.subDur) || x.sub._classifiedLang === 'heb')
+            // Verify Hebrew first and order deterministically (#57): which 12
+            // subtitles got body-checked used to depend on provider arrival order,
+            // which varies between otherwise-identical requests.
+            .sort((a, b) => {
+                const ha = a.sub._classifiedLang === 'heb' ? 0 : 1;
+                const hb = b.sub._classifiedLang === 'heb' ? 0 : 1;
+                if (ha !== hb) return ha - hb;
+                const sa = Number(a.sub.score || a.sub.SubRating || a.sub.rating || 0);
+                const sb = Number(b.sub.score || b.sub.SubRating || b.sub.rating || 0);
+                if (sa !== sb) return sb - sa;
+                return String(a.sub.url) < String(b.sub.url) ? -1 : 1;
+            })
             .slice(0, 12);
         await Promise.all(needPeek.map(async (x) => {
             const peek = await peekSrt(x.sub.url);
