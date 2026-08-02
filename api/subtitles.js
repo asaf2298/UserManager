@@ -6,6 +6,7 @@ import { parseSubtitleDurationMinutes, detectSubtitleScriptLang } from '../lib/s
 import { parseRelease, jaccard, FIELD } from '../lib/releaseParser.js';
 import { buildVideoKey, parseVideoIdentityFromUrl } from '../lib/streamSighting.js';
 import { pickHebrewSyncBases, buildSyncTrackDescriptors, hasKnownNoEmbeds } from '../lib/subtitleSync.js';
+import { signValue } from '../lib/urlSigning.js';
 
 const httpAgent = new http.Agent();
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
@@ -191,7 +192,11 @@ function buildProxyUrl(req, originalUrl) {
     try {
         const base = publicBaseUrl(req);
         if (!base) return originalUrl;
-        return `${base}/api/sub-proxy?url=${encodeURIComponent(originalUrl)}`;
+        const sig = signValue(originalUrl);
+        // Without a signing key the proxy refuses anyway, so hand the client the
+        // upstream URL directly rather than a link that will 403.
+        if (!sig) return originalUrl;
+        return `${base}/api/sub-proxy?url=${encodeURIComponent(originalUrl)}&sig=${sig}`;
     } catch {
         return originalUrl;
     }
